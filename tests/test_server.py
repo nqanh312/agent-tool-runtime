@@ -134,6 +134,27 @@ class ServerRenderingTests(unittest.TestCase):
         self.assertIn("/api/documents?session_id=", response.text)
         self.assertIn("title.textContent = documentMemory.file_name", response.text)
 
+    def test_audit_api_reads_persisted_conversation_entries(self):
+        conversation_id = "72f0ae68-c8bb-4c56-a12c-7811199f87ca"
+        persisted = [{"tool": "echo", "status": "success", "steps": []}]
+        repository = unittest.mock.MagicMock()
+        repository.list_entries.return_value = persisted
+
+        with (
+            patch.object(server, "audit_log_repository", repository),
+            patch.object(server.conversation_repository, "get_conversation"),
+        ):
+            response = self.client.get(
+                f"/api/audit?session_id={conversation_id}"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["audit_log"], persisted)
+        repository.list_entries.assert_called_once_with(
+            f"conversation:{conversation_id}",
+            "user_admin",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

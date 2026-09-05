@@ -3,6 +3,8 @@
 import json
 import sys
 from agent import Agent
+from registry.registry import check_authentication
+from services.audit_logs import audit_log_repository
 
 
 def print_help():
@@ -25,7 +27,13 @@ def main():
     print("  Capabilities: Google Drive | Read File | RAG Memory")
     print("="*60)
 
-    agent = Agent(service_api_key="sk-admin-001")
+    api_key = "sk-admin-001"
+    context_id = "cli:default"
+    user_id = check_authentication(api_key)["user_id"]
+    agent = Agent(
+        service_api_key=api_key,
+        audit_sink=lambda entry: audit_log_repository.append(context_id, entry),
+    )
 
     print_help()
 
@@ -53,7 +61,7 @@ def main():
             continue
 
         if user_input.lower() == "/audit":
-            logs = agent.get_audit_log()
+            logs = audit_log_repository.list_entries(context_id, user_id)
             if not logs:
                 print("\n[No audit logs yet]")
             else:

@@ -14,6 +14,7 @@ from agent import Agent
 from config import SERVICE_API_KEY
 from registry.registry import check_authentication
 from services.chat_renderer import render_chat_markdown
+from services.audit_logs import audit_log_repository
 from services.conversations import (
     ConversationNotFoundError,
     conversation_repository,
@@ -35,11 +36,19 @@ conversation_locks: dict[str, threading.Lock] = {}
 conversation_locks_guard = threading.Lock()
 
 
+def _audit_sink(context_id: str):
+    """Bind durable audit writes to one authenticated context."""
+    return lambda entry: audit_log_repository.append(context_id, entry)
+
+
 def get_agent(session_id: str) -> Agent:
     """Return a legacy in-memory session for backward-compatible clients."""
     key = f"legacy:{session_id}"
     if key not in sessions:
-        sessions[key] = Agent(service_api_key=SERVICE_API_KEY)
+        sessions[key] = Agent(
+            service_api_key=SERVICE_API_KEY,
+            audit_sink=_audit_sink(key),
+        )
     return sessions[key]
 
 
@@ -80,6 +89,7 @@ def _get_conversation_agent(
             service_api_key=SERVICE_API_KEY,
             conversation_history=history,
             last_artifact=artifact,
+            audit_sink=_audit_sink(key),
         )
     return sessions[key]
 
@@ -380,9 +390,22 @@ def clear_session(req: ClearRequest):
 
 @app.get("/api/audit")
 def get_audit(session_id: str = "default"):
-    """Return audit entries for one session."""
-    agent = sessions.get(f"conversation:{session_id}") or get_agent(session_id)
-    return {"audit_log": agent.get_audit_log()}
+    """Return durable audit entries for one conversation or legacy session."""
+    user = _current_user()
+    try:
+        uuid.UUID(session_id)
+        context_id = f"conversation:{session_id}"
+        conversation_repository.get_conversation(session_id, user["user_id"])
+    except ValueError:
+        context_id = f"legacy:{session_id}"
+    except ConversationNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {
+        "audit_log": audit_log_repository.list_entries(
+            context_id,
+            user["user_id"],
+        )
+    }
 
 
 @app.get("/api/memories", response_model=MemoryFactsResponse)

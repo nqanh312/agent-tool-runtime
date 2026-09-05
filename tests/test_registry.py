@@ -79,6 +79,23 @@ class RegistryTests(unittest.TestCase):
         )
         self.assertEqual(AUDIT_LOG[-1]["status"], "success")
         self.assertEqual(AUDIT_LOG[-1]["tool"], "list_drive_files")
+        self.assertEqual(len(AUDIT_LOG[-1]["steps"]), 6)
+        self.assertEqual(
+            [step["status"] for step in AUDIT_LOG[-1]["steps"]],
+            ["success"] * 6,
+        )
+
+    def test_persists_each_entry_to_a_configured_audit_sink(self):
+        persisted = []
+        registry = ToolRegistry(audit_sink=persisted.append)
+        registry.register(_echo_tool())
+
+        response = registry.call("echo", {"message": "hi"}, "sk-admin-001")
+
+        self.assertEqual(response, {"result": "hi"})
+        self.assertEqual(len(persisted), 1)
+        self.assertEqual(persisted[0]["tool"], "echo")
+        self.assertEqual(len(persisted[0]["steps"]), 6)
 
     def test_rejects_invalid_authentication(self):
         registry = ToolRegistry()
@@ -89,6 +106,10 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(response["error_type"], "PermissionError")
         self.assertEqual(AUDIT_LOG[-1]["user_id"], "anonymous")
         self.assertNotIn("wrong-key", str(AUDIT_LOG[-1]))
+        self.assertEqual(
+            [step["status"] for step in AUDIT_LOG[-1]["steps"]],
+            ["success", "error", "skipped", "skipped", "success", "skipped"],
+        )
 
     def test_rejects_missing_scope(self):
         registry = ToolRegistry()

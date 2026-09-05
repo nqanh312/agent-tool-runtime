@@ -7,6 +7,7 @@ from sqlalchemy import engine_from_config, pool
 
 from config import DATABASE_URL
 from services.conversations import Base
+from services.audit_logs import AuditBase
 
 
 config = context.config
@@ -14,7 +15,7 @@ config.set_main_option("sqlalchemy.url", DATABASE_URL.replace("%", "%%"))
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-target_metadata = Base.metadata
+target_metadata = [Base.metadata, AuditBase.metadata]
 
 
 def run_migrations_offline() -> None:
@@ -34,6 +35,7 @@ def run_migrations_online() -> None:
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args={"connect_timeout": 5},
     )
     with connectable.connect() as connection:
         context.configure(

@@ -63,6 +63,7 @@ This separation keeps model reasoning, policy enforcement, and external service 
 |   |-- file_reader.py       # Document-to-Markdown conversion
 |   |-- llm.py               # Anthropic/OpenAI/FCI model adapters
 |   |-- conversations.py     # PostgreSQL conversation repository
+|   |-- audit_logs.py        # PostgreSQL tool-audit repository
 |   `-- vectorstore.py       # Qdrant memory adapter
 |-- migrations/              # Alembic database migrations
 |-- tools/
@@ -244,7 +245,7 @@ python main.py
 | --- | --- |
 | `/help` | Show available commands |
 | `/clear` | Clear the current conversation |
-| `/audit` | Display tool-call audit entries |
+| `/audit` | Display tool-call audit entries with all six registry steps |
 | `/memory` | List stored memories |
 | `/quit` | Exit the application |
 
@@ -264,7 +265,7 @@ Open [http://localhost:9004](http://localhost:9004). The health endpoint is avai
 | `GET` | `/api/conversations` | List the current user's conversations |
 | `GET` | `/api/conversations/{id}/messages` | Load a page of stored messages |
 | `POST` | `/api/clear` | Evict transient Agent state without deleting chat history |
-| `GET` | `/api/audit?session_id=...` | Retrieve tool-call audit entries |
+| `GET` | `/api/audit?session_id=...` | Retrieve tool-call audit entries and six-step status trails |
 | `GET` | `/api/memories?session_id=...` | List the user's current facts and preferences |
 | `GET` | `/api/documents?session_id=...` | List saved document sources and chunk counts |
 | `GET` | `/api/health` | Check service availability |
@@ -291,7 +292,7 @@ curl -X POST http://localhost:9004/api/chat \
 | API-key authentication | Available (demo only) |
 | Scope authorization | Available |
 | Sliding-window rate limiter | Available (in-memory) |
-| Tool execution and audit logging | Available (in-memory) |
+| Tool execution and audit logging | Available (PostgreSQL) |
 | MarkItDown conversion | Available |
 | OpenAI and FCI embeddings | Available |
 | FCI structured fact/preference extraction | Available |
@@ -299,7 +300,7 @@ curl -X POST http://localhost:9004/api/chat \
 | PostgreSQL conversation history and pagination | Available |
 | Responsive conversation-history sidebar | Available |
 
-The in-memory authentication, rate limiting, and audit storage are intended for demonstration rather than production use. Chat history and current artifact state are persisted in PostgreSQL; long-term semantic memory is persisted separately in Qdrant.
+Authentication and rate limiting remain in-memory and are intended for demonstration rather than production use. Audit logs, chat history, and current artifact state are persisted in PostgreSQL; long-term semantic memory is persisted separately in Qdrant.
 
 ## Research directions
 

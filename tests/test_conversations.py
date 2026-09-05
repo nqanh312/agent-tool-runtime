@@ -157,6 +157,7 @@ class PersistentChatApiTests(unittest.TestCase):
                 {"role": "assistant", "content": "old answer"},
             ],
             last_artifact={"file_id": "drive-1"},
+            audit_sink=unittest.mock.ANY,
         )
 
     def test_first_message_returns_persistent_conversation_metadata(self):

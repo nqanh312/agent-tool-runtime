@@ -7,7 +7,7 @@ import json
 import sys
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 from .models import ToolDefinition
 
@@ -188,7 +188,69 @@ rate_limiter = RateLimiter(max_calls=20, window_seconds=60)
 AUDIT_LOG: list[dict] = []
 
 
-def audit_log(user: dict, tool_name: str, arguments: dict, result: Any = None, error: str = None):
+class AuditPersistenceError(RuntimeError):
+    """Raised when a configured durable audit sink cannot store an entry."""
+
+
+AUDIT_STEP_NAMES = (
+    "validate_schema",
+    "check_authentication",
+    "check_scopes",
+    "check_rate_limit",
+    "audit_log",
+    "execute_tool",
+)
+
+AUDIT_STEP_LABELS = (
+    "Validate Schema",
+    "Check Authentication",
+    "Check Scopes",
+    "Check Rate Limit",
+    "Audit Log",
+    "Execute Tool",
+)
+
+
+def _new_audit_steps() -> list[dict]:
+    """Create the six pipeline steps shown in agent_tool_flow.png."""
+    return [
+        {
+            "step": number,
+            "name": name,
+            "label": label,
+            "status": "skipped",
+            "timestamp": None,
+        }
+        for number, (name, label) in enumerate(
+            zip(AUDIT_STEP_NAMES, AUDIT_STEP_LABELS),
+            start=1,
+        )
+    ]
+
+
+def _mark_audit_step(
+    steps: list[dict],
+    step_number: int,
+    status: str,
+    *,
+    error: str | None = None,
+) -> None:
+    """Record the outcome of one pipeline step without storing secrets."""
+    step = steps[step_number - 1]
+    step["status"] = status
+    step["timestamp"] = datetime.now(timezone.utc).isoformat()
+    if error:
+        step["error"] = error
+
+
+def audit_log(
+    user: dict,
+    tool_name: str,
+    arguments: dict,
+    result: Any = None,
+    error: str = None,
+    steps: list[dict] | None = None,
+):
     """Append a structured tool-call outcome to the audit log."""
     entry = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -199,6 +261,7 @@ def audit_log(user: dict, tool_name: str, arguments: dict, result: Any = None, e
         "result": deepcopy(result),
         "error": error,
         "status": "error" if error else "success",
+        "steps": deepcopy(steps) if steps is not None else _new_audit_steps(),
     }
     AUDIT_LOG.append(entry)
     return entry
@@ -214,9 +277,21 @@ def execute_tool(tool: ToolDefinition, arguments: dict) -> Any:
 class ToolRegistry:
     """Store tool definitions and mediate access to their handlers."""
 
-    def __init__(self):
+    def __init__(self, audit_sink: Callable[[dict], Any] | None = None):
         self._tools: dict[str, ToolDefinition] = {}
         self._audit_entries: list[dict] = []
+        self._audit_sink = audit_sink
+
+    def _save_audit_entry(self, entry: dict) -> None:
+        """Keep a local copy and synchronously persist it when configured."""
+        self._audit_entries.append(entry)
+        if self._audit_sink is not None:
+            try:
+                self._audit_sink(deepcopy(entry))
+            except Exception as exc:
+                raise AuditPersistenceError(
+                    f"Could not persist audit log: {exc}"
+                ) from exc
 
     def register(self, tool: ToolDefinition):
         """Add or replace a tool definition by name."""
@@ -259,6 +334,8 @@ class ToolRegistry:
 
         user = {"user_id": "anonymous", "role": "unknown", "scopes": []}
         audit_arguments = arguments if isinstance(arguments, dict) else {}
+        steps = _new_audit_steps()
+        current_step = 1
 
         try:
             tool = self.get_tool(tool_name)
@@ -267,28 +344,55 @@ class ToolRegistry:
                     f"Tool '{tool_name}' is internal and cannot be called by the model"
                 )
             validated_arguments = validate_schema(tool, arguments)
+            _mark_audit_step(steps, 1, "success")
             audit_arguments = validated_arguments
-            user = check_authentication(api_key)
-            check_scopes(user, tool)
-            rate_limiter.check(user["user_id"])
 
+            current_step = 2
+            user = check_authentication(api_key)
+            _mark_audit_step(steps, 2, "success")
+
+            current_step = 3
+            check_scopes(user, tool)
+            _mark_audit_step(steps, 3, "success")
+
+            current_step = 4
+            rate_limiter.check(user["user_id"])
+            _mark_audit_step(steps, 4, "success")
+
+            current_step = 5
+            _mark_audit_step(steps, 5, "success")
+
+            current_step = 6
             user_token = _current_user.set(user)
             try:
                 result = execute_tool(tool, validated_arguments)
             finally:
                 _current_user.reset(user_token)
-            entry = audit_log(user, tool_name, validated_arguments, result=result)
-            self._audit_entries.append(entry)
+            _mark_audit_step(steps, 6, "success")
+            entry = audit_log(
+                user,
+                tool_name,
+                validated_arguments,
+                result=result,
+                steps=steps,
+            )
+            self._save_audit_entry(entry)
             return {"result": result}
         except Exception as exc:
+            if isinstance(exc, AuditPersistenceError):
+                raise
             error_message = str(exc) or exc.__class__.__name__
+            _mark_audit_step(steps, current_step, "error", error=error_message)
+            if current_step < 5:
+                _mark_audit_step(steps, 5, "success")
             entry = audit_log(
                 user,
                 tool_name,
                 audit_arguments,
                 error=error_message,
+                steps=steps,
             )
-            self._audit_entries.append(entry)
+            self._save_audit_entry(entry)
             return {
                 "error": error_message,
                 "error_type": exc.__class__.__name__,

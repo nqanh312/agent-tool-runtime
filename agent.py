@@ -4,6 +4,7 @@ import hashlib
 import json
 import sys
 import uuid
+from typing import Any, Callable
 import tiktoken
 from config import (
     CHAT_CONTEXT_MAX_TOKENS,
@@ -54,6 +55,7 @@ class Agent:
         llm_client: LLMClient | None = None,
         conversation_history: list[dict] | None = None,
         last_artifact: dict | None = None,
+        audit_sink: Callable[[dict], Any] | None = None,
     ):
         self.llm = llm_client or create_llm_client()
         self.model = self.llm.model
@@ -63,7 +65,7 @@ class Agent:
         self._tokenizer = tiktoken.get_encoding("cl100k_base")
 
         # Register tools once so every model request uses the same catalog.
-        self.registry = ToolRegistry()
+        self.registry = ToolRegistry(audit_sink=audit_sink)
         for tool in ALL_TOOLS:
             self.registry.register(tool)
         self.registry.register(
