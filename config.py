@@ -17,6 +17,17 @@ OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "").strip()
 
 FCI_API_KEY = os.getenv("FCI_API_KEY") or os.getenv("FPT_API_KEY")
 FCI_MODEL = os.getenv("FCI_MODEL", "gemma-4-31B-it")
+MEMORY_EXTRACTION_MODEL = os.getenv("MEMORY_EXTRACTION_MODEL", FCI_MODEL).strip()
+TURN_PLANNER_MODEL = os.getenv(
+    "TURN_PLANNER_MODEL",
+    MEMORY_EXTRACTION_MODEL,
+).strip()
+MEMORY_EXTRACTION_MIN_CONFIDENCE = float(
+    os.getenv("MEMORY_EXTRACTION_MIN_CONFIDENCE", "0.7")
+)
+MEMORY_RELEVANCE_MIN_SEMANTIC_SCORE = float(
+    os.getenv("MEMORY_RELEVANCE_MIN_SEMANTIC_SCORE", "0.7")
+)
 FCI_BASE_URL = os.getenv(
     "FCI_BASE_URL",
     "https://mkp-api.fptcloud.com/v1",
@@ -24,13 +35,20 @@ FCI_BASE_URL = os.getenv(
 
 # Embedding configuration
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "openai").strip().lower()
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
-EMBEDDING_DIM = 1536
+EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "1536"))
+MEMORY_CHUNK_TOKENS = int(os.getenv("MEMORY_CHUNK_TOKENS", "500"))
+MEMORY_CHUNK_OVERLAP_TOKENS = int(
+    os.getenv("MEMORY_CHUNK_OVERLAP_TOKENS", "75")
+)
 
 # Vector store configuration
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
-MEMORY_COLLECTION = "agent_memory"
+QDRANT_URL = os.getenv("QDRANT_URL", "").strip()
+QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "").strip()
+MEMORY_COLLECTION = os.getenv("MEMORY_COLLECTION", "agent_memory")
 
 # Google Drive configuration
 GOOGLE_SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "credentials.json")

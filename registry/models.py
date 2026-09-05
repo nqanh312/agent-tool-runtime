@@ -11,6 +11,7 @@ class ToolDefinition(BaseModel):
     input_schema: dict
     required_scopes: list[str]
     handler: Callable
+    model_visible: bool = True
 
     class Config:
         arbitrary_types_allowed = True

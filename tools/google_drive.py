@@ -41,6 +41,37 @@ list_files_tool = ToolDefinition(
 )
 
 
+def search_drive_files(query: str) -> dict:
+    """Search accessible Google Drive files by name."""
+    files = drive_service.search_files(query=query)
+    return {
+        "query": query,
+        "total_files": len(files),
+        "files": files,
+    }
+
+
+search_files_tool = ToolDefinition(
+    name="search_drive_files",
+    description=(
+        "Search Google Drive file names using a concise query. Use this instead "
+        "of repeatedly listing folders when the user wants a particular file."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "File name or distinctive file-name terms.",
+            },
+        },
+        "required": ["query"],
+    },
+    required_scopes=["drive:read"],
+    handler=search_drive_files,
+)
+
+
 # Download and convert one Drive file.
 
 def get_drive_file(file_id: str) -> dict:
@@ -68,7 +99,7 @@ read_file_tool = ToolDefinition(
         "The result contains Markdown content suitable for displaying in chat. "
         "Supports PDF, DOCX, XLS/XLSX, PPTX, Google Docs/Sheets/Slides, "
         "HTML, CSV, JSON, XML, and text files. "
-        "Always use list_drive_files first to find the correct file ID."
+        "Use search_drive_files first when only a file name is known."
     ),
     input_schema={
         "type": "object",
@@ -88,4 +119,4 @@ read_file_tool = ToolDefinition(
 read_drive_file = get_drive_file
 
 
-ALL_DRIVE_TOOLS = [list_files_tool, read_file_tool]
+ALL_DRIVE_TOOLS = [list_files_tool, search_files_tool, read_file_tool]

@@ -59,6 +59,9 @@ class _FakeDriveService:
 
 
 class ListFilesTests(unittest.TestCase):
+    def setUp(self):
+        drive_service.clear_drive_cache()
+
     def test_lists_every_page_in_a_folder(self):
         fake_service = _FakeDriveService()
 
@@ -101,6 +104,26 @@ class ListFilesTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "between 1 and 1000"):
             drive_service.list_files(page_size=1001)
 
+    def test_reuses_cached_folder_listing(self):
+        fake_service = _FakeDriveService()
+        with patch.object(drive_service, "_get_service", return_value=fake_service):
+            first = drive_service.list_files(folder_id="folder_cached")
+            second = drive_service.list_files(folder_id="folder_cached")
+
+        self.assertEqual(first, second)
+        self.assertEqual(len(fake_service.files_resource.calls), 2)
+
+    def test_searches_file_names_without_listing_folders(self):
+        fake_service = _FakeDriveService()
+        with patch.object(drive_service, "_get_service", return_value=fake_service):
+            files = drive_service.search_files("Drive Agent")
+
+        self.assertEqual(len(files), 2)
+        query = fake_service.files_resource.calls[0]["q"]
+        self.assertIn("name contains 'Drive'", query)
+        self.assertIn("name contains 'Agent'", query)
+        self.assertNotIn("in parents", query)
+
     def test_tool_returns_count_and_files(self):
         expected_files = [{"id": "file-1", "name": "Document"}]
 
@@ -115,6 +138,25 @@ class ListFilesTests(unittest.TestCase):
         self.assertEqual(
             result,
             {"total_files": 1, "files": expected_files},
+        )
+
+    def test_search_tool_returns_query_and_files(self):
+        expected_files = [{"id": "file-1", "name": "Assignment.pptx"}]
+        with patch.object(
+            google_drive.drive_service,
+            "search_files",
+            return_value=expected_files,
+        ) as search_files:
+            result = google_drive.search_drive_files("Assignment")
+
+        search_files.assert_called_once_with(query="Assignment")
+        self.assertEqual(
+            result,
+            {
+                "query": "Assignment",
+                "total_files": 1,
+                "files": expected_files,
+            },
         )
 
     def test_get_drive_file_converts_content_and_removes_temp_file(self):

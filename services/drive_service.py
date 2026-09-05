@@ -4,6 +4,8 @@ import io
 import os
 import re
 import tempfile
+import threading
+import time
 from urllib.parse import parse_qs, urlparse
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -14,9 +16,50 @@ from config import GOOGLE_SERVICE_ACCOUNT_FILE, GOOGLE_DRIVE_FOLDER_ID
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 
 _service = None
+_CACHE_TTL_SECONDS = 60
+_cache_lock = threading.Lock()
+_file_cache: dict[tuple, tuple[float, list[dict]]] = {}
 
 # Prevent folder IDs from altering the Drive query expression.
 _DRIVE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def clear_drive_cache():
+    """Clear cached file metadata, primarily for explicit refreshes and tests."""
+    with _cache_lock:
+        _file_cache.clear()
+
+
+def _cached(key: tuple) -> list[dict] | None:
+    now = time.monotonic()
+    with _cache_lock:
+        cached = _file_cache.get(key)
+        if cached is None or cached[0] <= now:
+            _file_cache.pop(key, None)
+            return None
+        return [dict(item) for item in cached[1]]
+
+
+def _store_cache(key: tuple, files: list[dict]) -> list[dict]:
+    with _cache_lock:
+        _file_cache[key] = (
+            time.monotonic() + _CACHE_TTL_SECONDS,
+            [dict(item) for item in files],
+        )
+    return files
+
+
+def _normalize_files(files: list[dict]) -> list[dict]:
+    return [
+        {
+            "id": item["id"],
+            "name": item["name"],
+            "mimeType": item.get("mimeType", ""),
+            "size": item.get("size", "unknown"),
+            "modifiedTime": item.get("modifiedTime", ""),
+        }
+        for item in files
+    ]
 
 
 def _normalize_folder_id(folder_reference: str | None) -> str | None:
@@ -73,6 +116,10 @@ def list_files(folder_id: str | None = None, page_size: int = 100) -> list[dict]
     effective_folder_id = _normalize_folder_id(
         folder_id or GOOGLE_DRIVE_FOLDER_ID or None
     )
+    cache_key = ("list", effective_folder_id, page_size)
+    cached = _cached(cache_key)
+    if cached is not None:
+        return cached
 
     service = _get_service()
 
@@ -101,16 +148,52 @@ def list_files(folder_id: str | None = None, page_size: int = 100) -> list[dict]
         if not page_token:
             break
 
-    return [
-        {
-            "id": f["id"],
-            "name": f["name"],
-            "mimeType": f.get("mimeType", ""),
-            "size": f.get("size", "unknown"),
-            "modifiedTime": f.get("modifiedTime", ""),
-        }
-        for f in files
-    ]
+    return _store_cache(cache_key, _normalize_files(files))
+
+
+def search_files(query: str, page_size: int = 100) -> list[dict]:
+    """Search accessible Drive file names without recursively listing folders."""
+    if isinstance(page_size, bool) or not isinstance(page_size, int):
+        raise TypeError("page_size must be an integer")
+    if not 1 <= page_size <= 1000:
+        raise ValueError("page_size must be between 1 and 1000")
+    terms = list(dict.fromkeys(re.findall(r"[\w.-]+", query.strip(), re.UNICODE)))
+    terms = [term for term in terms if len(term) > 1][:6]
+    if not terms:
+        raise ValueError("A non-empty Drive file search query is required")
+
+    normalized_query = " ".join(terms).casefold()
+    cache_key = ("search", normalized_query, page_size)
+    cached = _cached(cache_key)
+    if cached is not None:
+        return cached
+
+    def escaped(value: str) -> str:
+        return value.replace("\\", "\\\\").replace("'", "\\'")
+
+    name_conditions = " or ".join(
+        f"name contains '{escaped(term)}'" for term in terms
+    )
+    drive_query = f"trashed = false and ({name_conditions})"
+    service = _get_service()
+    files: list[dict] = []
+    page_token = None
+    while True:
+        results = service.files().list(
+            q=drive_query,
+            spaces="drive",
+            pageSize=page_size,
+            pageToken=page_token,
+            fields="nextPageToken, files(id, name, mimeType, size, modifiedTime)",
+            orderBy="modifiedTime desc",
+            includeItemsFromAllDrives=True,
+            supportsAllDrives=True,
+        ).execute()
+        files.extend(results.get("files", []))
+        page_token = results.get("nextPageToken")
+        if not page_token:
+            break
+    return _store_cache(cache_key, _normalize_files(files))
 
 
 def download_file(file_id: str) -> dict:

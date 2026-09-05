@@ -7,7 +7,7 @@ Agent Tool Runtime is an experimental Python framework for connecting Anthropic,
 The project explores a practical question: **how can an AI agent use external capabilities while keeping tool execution explicit, inspectable, and controllable?**
 
 > [!IMPORTANT]
-> This project is under active development. The agent loop, interfaces, governed tool execution, Google Drive tools, and document conversion are available; RAG memory components are still marked `TODO`. See [Development status](#development-status) before running the project.
+> This project is under active development. The agent loop, interfaces, governed tool execution, Google Drive tools, document conversion, and hybrid RAG memory are available. See [Development status](#development-status) before running the project.
 
 ## Highlights
 
@@ -17,8 +17,10 @@ The project explores a practical question: **how can an AI agent use external ca
 - Six-stage execution pipeline for validation, authentication, authorization, rate limiting, execution, and auditing.
 - Read-only Google Drive integration through a service account.
 - Document conversion for PDF, DOCX, XLS/XLSX, PPTX, HTML, and text formats using MarkItDown.
+- FCI-based extraction of explicit user facts and preferences into structured current-state memory before the chat model runs.
+- FCI turn routing that selects RAG, Drive browsing, Drive reading, artifact saving, or general chat in the same classification call.
 - Sanitized Markdown rendering for headings, tables, lists, code blocks, and links in web chat.
-- Semantic long-term memory using OpenAI embeddings and Qdrant.
+- Semantic long-term memory using OpenAI or FCI embeddings and Qdrant.
 - CLI and FastAPI interfaces with session-isolated conversation history.
 
 ## Architecture
@@ -74,7 +76,7 @@ This separation keeps model reasoning, policy enforcement, and external service 
 
 - Python 3.10 or later
 - An API key for the selected model provider (Anthropic, OpenAI, or FCI)
-- An OpenAI API key for embeddings
+- An API key authorized for the selected OpenAI or FCI embedding model
 - Docker Desktop or an accessible Qdrant instance
 - A Google Cloud service account for Google Drive integration
 
@@ -120,19 +122,31 @@ ANTHROPIC_MODEL=claude-sonnet-4-20250514
 
 OPENAI_API_KEY=your_openai_api_key
 OPENAI_LLM_MODEL=gpt-4.1-mini
+EMBEDDING_PROVIDER=openai
+EMBEDDING_MODEL=text-embedding-3-small
+EMBEDDING_DIM=1536
+MEMORY_CHUNK_TOKENS=500
+MEMORY_CHUNK_OVERLAP_TOKENS=75
 
 FCI_API_KEY=your_fci_api_key
 FCI_MODEL=gemma-4-31B-it
 FCI_BASE_URL=https://mkp-api.fptcloud.com/v1
+MEMORY_EXTRACTION_MODEL=gemma-4-31B-it
+TURN_PLANNER_MODEL=gemma-4-31B-it
+MEMORY_EXTRACTION_MIN_CONFIDENCE=0.7
+MEMORY_RELEVANCE_MIN_SEMANTIC_SCORE=0.7
 
 QDRANT_HOST=localhost
 QDRANT_PORT=6333
+MEMORY_COLLECTION=agent_memory
 
 GOOGLE_SERVICE_ACCOUNT_FILE=credentials.json
 GOOGLE_DRIVE_FOLDER_ID=your_google_drive_folder_id
 ```
 
 `GOOGLE_DRIVE_FOLDER_ID` is optional. Leave it empty to list every file accessible to the service account.
+
+For Qdrant Cloud, set `QDRANT_URL` and `QDRANT_API_KEY` instead of the local host/port. Memory is partitioned by the authenticated registry user. Facts and preferences up to the configured token limit remain intact. Documents are parsed into Markdown headings, paragraphs, lists, tables, and fenced code blocks; blocks are packed into token-limited chunks with overlap, and only oversized blocks are hard-split. Retrieval combines cosine similarity with BM25 ranking.
 
 Select exactly one chat-model provider with `LLM_PROVIDER`:
 
@@ -143,6 +157,36 @@ Select exactly one chat-model provider with `LLM_PROVIDER`:
 | FCI/FPT Cloud | `fci` | `FCI_API_KEY` | `FCI_MODEL` |
 
 `LLM_MODEL` is an optional global override. Leave it empty to use the model configured for the selected provider. FCI uses its OpenAI-compatible Chat Completions endpoint; `FPT_API_KEY` is also accepted as an alias for `FCI_API_KEY`.
+
+Select `EMBEDDING_PROVIDER=openai` or `EMBEDDING_PROVIDER=fci` independently of the chat provider. For FCI embeddings, the API key must be authorized for an embedding model. Example:
+
+```env
+EMBEDDING_PROVIDER=fci
+EMBEDDING_MODEL=multilingual-e5-large
+EMBEDDING_DIM=1024
+MEMORY_COLLECTION=agent_memory_fci_1024
+```
+
+Use a new collection whenever the embedding dimension or embedding model changes; existing vectors from another model are not compatible.
+
+Turn planning and automatic fact extraction use one FCI request, independently of
+`LLM_PROVIDER`. The planner makes one forced structured-output call for each user
+message. It routes the turn to RAG recall, Drive browsing, Drive file reading,
+current-artifact saving, or general chat. It also assigns
+`category`, an English `snake_case` topic, normalized value, polarity, and confidence;
+compound statements are split into separate memories. A preference is keyed by
+`category + topic + canonical_value`, so a later polarity change updates the same
+record instead of leaving contradictory active records. Set
+`TURN_PLANNER_MODEL` to an FCI chat model available to your API key, and adjust
+`MEMORY_EXTRACTION_MIN_CONFIDENCE` to control which extracted items are persisted.
+
+Memory writes have separate ownership boundaries. FCI extraction invokes the internal
+`upsert_user_memory` operation for structured facts and preferences. Current files are
+saved through `save_current_document`, which reads trusted server-side artifact state
+instead of asking the model to reproduce the content. The underlying write operations
+are registered for authentication, authorization, rate limiting, and auditing but are
+never exposed to the chat model. Both paths share the same chunking, embedding, and
+Qdrant persistence implementation.
 
 > [!WARNING]
 > Never commit `.env`, API keys, or service-account credentials. The default `.gitignore` excludes these files.
@@ -209,6 +253,8 @@ Open [http://localhost:9004](http://localhost:9004). The health endpoint is avai
 | `POST` | `/api/chat` | Send a message to an agent session |
 | `POST` | `/api/clear` | Clear a session's conversation history |
 | `GET` | `/api/audit?session_id=...` | Retrieve tool-call audit entries |
+| `GET` | `/api/memories?session_id=...` | List the user's current facts and preferences |
+| `GET` | `/api/documents?session_id=...` | List saved document sources and chunk counts |
 | `GET` | `/api/health` | Check service availability |
 
 Example request:
@@ -235,10 +281,11 @@ curl -X POST http://localhost:9004/api/chat \
 | Sliding-window rate limiter | Available (in-memory) |
 | Tool execution and audit logging | Available (in-memory) |
 | MarkItDown conversion | Available |
-| OpenAI embeddings | Planned |
-| Qdrant memory storage and retrieval | Planned |
+| OpenAI and FCI embeddings | Available |
+| FCI structured fact/preference extraction | Available |
+| Qdrant hybrid memory (vector + BM25) | Available |
 
-The `list_drive_files` tool now runs end to end through the registry. File conversion and RAG memory still contain planned implementations, and the in-memory authentication, rate limiting, and audit storage are intended for demonstration rather than production use.
+The in-memory authentication, rate limiting, and audit storage are intended for demonstration rather than production use. Long-term memory itself is persisted in Qdrant and remains available after conversation history is cleared or the browser is reloaded.
 
 ## Research directions
 

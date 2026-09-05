@@ -1,12 +1,13 @@
 """Test the model -> registry -> Drive tool -> model loop."""
 
-import json
 import unittest
 from unittest.mock import patch
 
+import agent as agent_module
 from agent import Agent
 from registry.registry import AUDIT_LOG, rate_limiter
-from services.llm import ModelResponse, ModelToolCall
+from services.llm import ModelResponse
+from services.memory_extractor import TurnPlan
 from tools import google_drive
 
 
@@ -31,61 +32,34 @@ class AgentToolLoopTests(unittest.TestCase):
     def test_list_drive_files_tool_result_is_returned_to_model(self):
         llm = _FakeLLMClient(
             [
-                ModelResponse(
-                    tool_calls=[
-                        ModelToolCall(
-                            id="tool-use-1",
-                            name="list_drive_files",
-                            arguments={},
-                        )
-                    ],
-                    stop_reason="tool_calls",
-                ),
                 ModelResponse(text="Drive has 1 file.", stop_reason="stop"),
             ]
         )
 
-        with patch.object(
-            google_drive.drive_service,
-            "list_files",
-            return_value=[{"id": "file-1", "name": "Document"}],
+        with (
+            patch.object(
+                agent_module,
+                "plan_user_turn",
+                return_value=TurnPlan(intent="browse_drive"),
+            ),
+            patch.object(
+                google_drive.drive_service,
+                "list_files",
+                return_value=[{"id": "file-1", "name": "Document"}],
+            ),
         ):
             tested_agent = Agent(llm_client=llm)
             response = tested_agent.run("List files in Drive")
 
         self.assertEqual(response, "Drive has 1 file.")
-        self.assertEqual(len(llm.requests), 2)
-
-        tool_result_message = next(
-            message
-            for message in tested_agent.conversation_history
-            if message["role"] == "tool"
-        )
-        tool_result = tool_result_message["results"][0]
-        payload = json.loads(tool_result["content"])
-        self.assertFalse(tool_result["is_error"])
-        self.assertEqual(payload["result"]["total_files"], 1)
+        self.assertEqual(len(llm.requests), 1)
+        self.assertIn("Document", llm.requests[0]["system_prompt"])
+        self.assertEqual(llm.requests[0]["tools"], [])
         self.assertEqual(AUDIT_LOG[-1]["tool"], "list_drive_files")
 
     def test_agent_lists_then_reads_the_selected_drive_file(self):
         llm = _FakeLLMClient(
             [
-                ModelResponse(
-                    tool_calls=[
-                        ModelToolCall("list-1", "list_drive_files", {})
-                    ],
-                    stop_reason="tool_calls",
-                ),
-                ModelResponse(
-                    tool_calls=[
-                        ModelToolCall(
-                            "read-1",
-                            "get_drive_file",
-                            {"file_id": "file-1"},
-                        )
-                    ],
-                    stop_reason="tool_calls",
-                ),
                 ModelResponse(
                     text="File content",
                     stop_reason="stop",
@@ -101,8 +75,16 @@ class AgentToolLoopTests(unittest.TestCase):
 
         with (
             patch.object(
+                agent_module,
+                "plan_user_turn",
+                return_value=TurnPlan(
+                    intent="read_drive_file",
+                    file_query="Document.txt",
+                ),
+            ),
+            patch.object(
                 google_drive.drive_service,
-                "list_files",
+                "search_files",
                 return_value=[{"id": "file-1", "name": "Document.txt"}],
             ),
             patch.object(
@@ -122,13 +104,17 @@ class AgentToolLoopTests(unittest.TestCase):
             ),
             patch.object(google_drive.os, "unlink"),
         ):
-            response = Agent(llm_client=llm).run("Read Document.txt")
+            tested_agent = Agent(llm_client=llm)
+            response = tested_agent.run("Read Document.txt")
 
         self.assertEqual(response, "File content")
         self.assertEqual(
             [entry["tool"] for entry in AUDIT_LOG],
-            ["list_drive_files", "get_drive_file"],
+            ["search_drive_files", "get_drive_file"],
         )
+        self.assertEqual(len(llm.requests), 1)
+        self.assertEqual(llm.requests[0]["tools"], [])
+        self.assertEqual(tested_agent.last_artifact["file_id"], "file-1")
 
 
 if __name__ == "__main__":

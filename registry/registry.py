@@ -1,13 +1,36 @@
 """Register tools and enforce policy before each tool execution."""
 
 from copy import deepcopy
+from contextvars import ContextVar
 from datetime import datetime, timezone
 import json
+import sys
 import threading
 import time
 from typing import Any
 
 from .models import ToolDefinition
+
+
+_current_user: ContextVar[dict | None] = ContextVar(
+    "current_tool_user",
+    default=None,
+)
+
+
+def get_current_user() -> dict:
+    """Return the authenticated user for the tool currently being executed."""
+    return deepcopy(_current_user.get() or {
+        "user_id": "anonymous",
+        "role": "unknown",
+        "scopes": [],
+    })
+
+
+def _console_safe(value: str) -> str:
+    """Make diagnostic output safe for Windows consoles with legacy encodings."""
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    return value.encode(encoding, errors="backslashreplace").decode(encoding)
 
 
 # Step 1: validate arguments.
@@ -215,13 +238,22 @@ class ToolRegistry:
                 "input_schema": t.input_schema,
             }
             for t in self._tools.values()
+            if t.model_visible
         ]
 
-    def call(self, tool_name: str, arguments: dict, api_key: str) -> dict:
+    def call(
+        self,
+        tool_name: str,
+        arguments: dict,
+        api_key: str,
+        *,
+        model_initiated: bool = False,
+    ) -> dict:
         """Apply registry policy, execute a tool, and audit the outcome."""
         print(f"\n{'='*60}")
         print(f"  TOOL CALL: {tool_name}")
-        print(f"  Arguments: {json.dumps(arguments, ensure_ascii=False)}")
+        arguments_json = json.dumps(arguments, ensure_ascii=False)
+        print(f"  Arguments: {_console_safe(arguments_json)}")
         print(f"{'='*60}")
 
         user = {"user_id": "anonymous", "role": "unknown", "scopes": []}
@@ -229,13 +261,21 @@ class ToolRegistry:
 
         try:
             tool = self.get_tool(tool_name)
+            if model_initiated and not tool.model_visible:
+                raise PermissionError(
+                    f"Tool '{tool_name}' is internal and cannot be called by the model"
+                )
             validated_arguments = validate_schema(tool, arguments)
             audit_arguments = validated_arguments
             user = check_authentication(api_key)
             check_scopes(user, tool)
             rate_limiter.check(user["user_id"])
 
-            result = execute_tool(tool, validated_arguments)
+            user_token = _current_user.set(user)
+            try:
+                result = execute_tool(tool, validated_arguments)
+            finally:
+                _current_user.reset(user_token)
             audit_log(user, tool_name, validated_arguments, result=result)
             return {"result": result}
         except Exception as exc:
