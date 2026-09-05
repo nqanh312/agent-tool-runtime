@@ -1,76 +1,93 @@
-# AI Agent with Tool Registry
+# Agent Tool Runtime
 
-Một AI Agent mẫu sử dụng Claude, tích hợp Tool Registry, Google Drive, đọc tài liệu và bộ nhớ dài hạn dựa trên RAG với Qdrant.
+> A modular runtime for building auditable AI agents with secure tool execution and long-term memory.
+
+Agent Tool Runtime is an experimental Python framework for connecting Anthropic, OpenAI, or FCI/FPT Cloud models to external tools through a governed execution pipeline. It combines a central tool registry, scoped access control, audit logging, document ingestion, and RAG-based memory in a compact codebase designed for learning and research.
+
+The project explores a practical question: **how can an AI agent use external capabilities while keeping tool execution explicit, inspectable, and controllable?**
 
 > [!IMPORTANT]
-> Đây hiện là project dạng assignment/scaffold. Một số thành phần cốt lõi vẫn được đánh dấu `TODO`; xem [Trạng thái phát triển](#trạng-thái-phát-triển) trước khi chạy hoặc triển khai.
+> This project is under active development. The agent loop, interfaces, governed tool execution, Google Drive tools, and document conversion are available; RAG memory components are still marked `TODO`. See [Development status](#development-status) before running the project.
 
-## Tính năng
+## Highlights
 
-- Trò chuyện với Claude qua CLI hoặc giao diện web.
-- Đăng ký và gọi tool thông qua một registry tập trung.
-- Thiết kế pipeline tool gồm 6 bước: validate schema, authentication, authorization scope, rate limit, execution và audit log.
-- Liệt kê, tải và đọc file từ Google Drive bằng service account.
-- Chuyển đổi PDF, DOCX, XLSX, PPTX và nhiều định dạng khác sang Markdown bằng MarkItDown.
-- Lưu và tìm kiếm semantic memory bằng OpenAI Embeddings và Qdrant.
-- Quản lý lịch sử hội thoại riêng theo từng session trên web.
+- Provider-independent agent loop with Anthropic and OpenAI-compatible tool use.
+- Runtime provider selection for Anthropic, OpenAI, and FCI/FPT Cloud.
+- Central registry for tool definitions and invocation.
+- Six-stage execution pipeline for validation, authentication, authorization, rate limiting, execution, and auditing.
+- Read-only Google Drive integration through a service account.
+- Document conversion for PDF, DOCX, XLS/XLSX, PPTX, HTML, and text formats using MarkItDown.
+- Sanitized Markdown rendering for headings, tables, lists, code blocks, and links in web chat.
+- Semantic long-term memory using OpenAI embeddings and Qdrant.
+- CLI and FastAPI interfaces with session-isolated conversation history.
 
-## Kiến trúc
+## Architecture
 
-![Luồng hoạt động của AI Agent và Tool Registry](./agent_tool_flow.png)
+![Agent Tool Runtime architecture](./agent_tool_flow.png)
 
-Pipeline dự kiến của mỗi tool call:
+Every tool call is designed to pass through the same policy boundary:
 
 ```text
-Validate schema -> Authenticate -> Check scopes -> Rate limit
-                -> Execute tool -> Write audit log
+User request
+    -> Configured model provider
+    -> Tool registry
+       -> Validate schema
+       -> Authenticate caller
+       -> Check scopes
+       -> Enforce rate limit
+       -> Execute handler
+       -> Write audit log
+    -> Tool result
+    -> Claude response
 ```
 
-## Cấu trúc project
+This separation keeps model reasoning, policy enforcement, and external service access independent and easier to test.
+
+## Project structure
 
 ```text
 .
-|-- agent.py                 # Vòng lặp Claude và tool use
-|-- config.py                # Đọc cấu hình từ biến môi trường
-|-- main.py                  # Giao diện dòng lệnh
-|-- server.py                # FastAPI server và web UI
+|-- agent.py                 # Provider-independent conversation and tool loop
+|-- config.py                # Environment-based configuration
+|-- main.py                  # Interactive CLI
+|-- server.py                # FastAPI service and web UI
 |-- registry/
-|   |-- models.py            # Mô hình định nghĩa tool
-|   `-- registry.py          # Pipeline Tool Registry
+|   |-- models.py            # Tool metadata model
+|   `-- registry.py          # Policy and execution pipeline
 |-- services/
-|   |-- drive_service.py     # Kết nối Google Drive API
-|   |-- embedding.py         # OpenAI Embeddings
-|   |-- file_reader.py       # Chuyển file sang Markdown
-|   `-- vectorstore.py       # Lưu và tìm memory trên Qdrant
+|   |-- drive_service.py     # Google Drive API adapter
+|   |-- embedding.py         # OpenAI embedding adapter
+|   |-- file_reader.py       # Document-to-Markdown conversion
+|   |-- llm.py               # Anthropic/OpenAI/FCI model adapters
+|   `-- vectorstore.py       # Qdrant memory adapter
 |-- tools/
-|   |-- google_drive.py      # Các tool Google Drive
-|   |-- memory.py            # Các tool RAG memory
-|   `-- read_file.py         # Tool đọc file cục bộ
+|   |-- google_drive.py      # Google Drive tools
+|   |-- memory.py            # Long-term memory tools
+|   `-- read_file.py         # Local file-reading tool
 |-- static/
-|   `-- index.html           # Giao diện chat
+|   `-- index.html           # Browser-based chat interface
+|-- tests/                   # Automated tests
 `-- requirements.txt
 ```
 
-## Yêu cầu
+## Requirements
 
-- Python 3.10 trở lên.
-- Docker Desktop hoặc một Qdrant server có thể truy cập được.
-- Anthropic API key.
-- OpenAI API key cho embeddings.
-- Google Cloud service account nếu sử dụng Google Drive.
+- Python 3.10 or later
+- An API key for the selected model provider (Anthropic, OpenAI, or FCI)
+- An OpenAI API key for embeddings
+- Docker Desktop or an accessible Qdrant instance
+- A Google Cloud service account for Google Drive integration
 
-## Cài đặt
+## Getting started
 
-### 1. Clone repository
+### 1. Clone the repository
 
 ```bash
-git clone <repository-url>
-cd Assignment-1
+git clone https://github.com/<your-username>/agent-tool-runtime.git
+cd agent-tool-runtime
 ```
 
-Thay `<repository-url>` bằng URL GitHub của repository sau khi bạn public project.
-
-### 2. Tạo virtual environment
+### 2. Create a virtual environment
 
 Windows PowerShell:
 
@@ -81,7 +98,7 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-macOS/Linux:
+macOS or Linux:
 
 ```bash
 python3 -m venv .venv
@@ -90,13 +107,23 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-### 3. Cấu hình biến môi trường
+### 3. Configure environment variables
 
-Tạo file `.env` trong thư mục gốc:
+Copy `.env.example` to `.env`, then configure the selected provider:
 
 ```env
+LLM_PROVIDER=anthropic
+LLM_MODEL=
+
 ANTHROPIC_API_KEY=your_anthropic_api_key
+ANTHROPIC_MODEL=claude-sonnet-4-20250514
+
 OPENAI_API_KEY=your_openai_api_key
+OPENAI_LLM_MODEL=gpt-4.1-mini
+
+FCI_API_KEY=your_fci_api_key
+FCI_MODEL=gemma-4-31B-it
+FCI_BASE_URL=https://mkp-api.fptcloud.com/v1
 
 QDRANT_HOST=localhost
 QDRANT_PORT=6333
@@ -105,111 +132,135 @@ GOOGLE_SERVICE_ACCOUNT_FILE=credentials.json
 GOOGLE_DRIVE_FOLDER_ID=your_google_drive_folder_id
 ```
 
-`GOOGLE_DRIVE_FOLDER_ID` có thể để trống nếu không muốn giới hạn truy vấn vào một folder mặc định.
+`GOOGLE_DRIVE_FOLDER_ID` is optional. Leave it empty to list every file accessible to the service account.
+
+Select exactly one chat-model provider with `LLM_PROVIDER`:
+
+| Provider | Value | Required key | Default model |
+| --- | --- | --- | --- |
+| Anthropic | `anthropic` | `ANTHROPIC_API_KEY` | `ANTHROPIC_MODEL` |
+| OpenAI | `openai` | `OPENAI_API_KEY` | `OPENAI_LLM_MODEL` |
+| FCI/FPT Cloud | `fci` | `FCI_API_KEY` | `FCI_MODEL` |
+
+`LLM_MODEL` is an optional global override. Leave it empty to use the model configured for the selected provider. FCI uses its OpenAI-compatible Chat Completions endpoint; `FPT_API_KEY` is also accepted as an alias for `FCI_API_KEY`.
 
 > [!WARNING]
-> Không commit `.env`, API key hoặc file service-account lên Git. Các file này đã được loại trừ trong `.gitignore`.
+> Never commit `.env`, API keys, or service-account credentials. The default `.gitignore` excludes these files.
 
-### 4. Chạy Qdrant
-
-Khởi động Docker Desktop, sau đó chạy:
+### 4. Start Qdrant
 
 ```bash
-docker run -d --name assignment-qdrant --restart unless-stopped -p 127.0.0.1:6333:6333 -v qdrant_data:/qdrant/storage qdrant/qdrant
+docker run -d --name agent-tool-runtime-qdrant \
+  --restart unless-stopped \
+  -p 127.0.0.1:6333:6333 \
+  -v agent_tool_runtime_qdrant:/qdrant/storage \
+  qdrant/qdrant
 ```
 
-Kiểm tra container:
+The Qdrant dashboard will be available at [http://localhost:6333/dashboard](http://localhost:6333/dashboard).
+
+Useful container commands:
 
 ```bash
-docker ps
+docker stop agent-tool-runtime-qdrant
+docker start agent-tool-runtime-qdrant
+docker logs agent-tool-runtime-qdrant
 ```
 
-Qdrant Dashboard có tại [http://localhost:6333/dashboard](http://localhost:6333/dashboard).
+### 5. Configure Google Drive (optional)
 
-Các lệnh quản lý thường dùng:
+1. Create a project in Google Cloud Console.
+2. Enable the Google Drive API.
+3. Create a service account and download its JSON key.
+4. Set the key path with `GOOGLE_SERVICE_ACCOUNT_FILE`.
+5. Share the target Drive folder with the service account email.
+6. Set `GOOGLE_DRIVE_FOLDER_ID` if access should default to one folder.
 
-```bash
-docker stop assignment-qdrant
-docker start assignment-qdrant
-docker logs assignment-qdrant
-```
+The integration requests only the `https://www.googleapis.com/auth/drive.readonly` scope.
 
-### 5. Cấu hình Google Drive (tùy chọn)
+## Usage
 
-1. Tạo project trên Google Cloud Console.
-2. Bật Google Drive API.
-3. Tạo service account và tải JSON key.
-4. Đổi tên hoặc cấu hình đường dẫn file key qua `GOOGLE_SERVICE_ACCOUNT_FILE`.
-5. Chia sẻ folder Drive cần đọc với email của service account.
-6. Điền ID của folder vào `GOOGLE_DRIVE_FOLDER_ID` nếu cần.
-
-Ứng dụng chỉ yêu cầu scope đọc: `https://www.googleapis.com/auth/drive.readonly`.
-
-## Chạy ứng dụng
-
-### CLI
+### Command-line interface
 
 ```bash
 python main.py
 ```
 
-Các lệnh hỗ trợ:
-
-| Lệnh | Chức năng |
+| Command | Description |
 | --- | --- |
-| `/help` | Hiển thị trợ giúp |
-| `/clear` | Xóa lịch sử hội thoại hiện tại |
-| `/audit` | Hiển thị audit log của các tool call |
-| `/memory` | Liệt kê memory đã lưu |
-| `/quit` | Thoát ứng dụng |
+| `/help` | Show available commands |
+| `/clear` | Clear the current conversation |
+| `/audit` | Display tool-call audit entries |
+| `/memory` | List stored memories |
+| `/quit` | Exit the application |
 
-### Web UI
+### Web interface
 
 ```bash
 python server.py
 ```
 
-Sau đó mở [http://localhost:9004](http://localhost:9004). API health check có tại [http://localhost:9004/api/health](http://localhost:9004/api/health).
+Open [http://localhost:9004](http://localhost:9004). The health endpoint is available at [http://localhost:9004/api/health](http://localhost:9004/api/health).
 
 ## HTTP API
 
-| Method | Endpoint | Mô tả |
+| Method | Endpoint | Description |
 | --- | --- | --- |
-| `POST` | `/api/chat` | Gửi tin nhắn cho agent |
-| `POST` | `/api/clear` | Xóa lịch sử của một session |
-| `GET` | `/api/audit?session_id=...` | Lấy audit log |
-| `GET` | `/api/health` | Kiểm tra server |
+| `POST` | `/api/chat` | Send a message to an agent session |
+| `POST` | `/api/clear` | Clear a session's conversation history |
+| `GET` | `/api/audit?session_id=...` | Retrieve tool-call audit entries |
+| `GET` | `/api/health` | Check service availability |
 
-Ví dụ gửi tin nhắn:
+Example request:
 
 ```bash
 curl -X POST http://localhost:9004/api/chat \
   -H "Content-Type: application/json" \
-  -d '{"session_id":"demo","message":"Xin chào"}'
+  -d '{"session_id":"demo","message":"List my Drive files."}'
 ```
 
-## Trạng thái phát triển
+## Development status
 
-| Thành phần | Trạng thái |
+| Component | Status |
 | --- | --- |
-| Claude conversation loop | Đã có |
-| CLI và FastAPI web UI | Đã có |
-| Đăng ký tool | Đã có |
-| Google Drive list/download | Đã có |
-| Schema validation | TODO |
-| Authentication và scope checks | TODO |
-| Sliding-window rate limiter | TODO |
-| Tool execution và audit logging | TODO |
-| Chuyển nội dung file bằng MarkItDown | TODO |
-| OpenAI embeddings | TODO |
-| Lưu và tìm kiếm memory trên Qdrant | TODO |
+| Provider-independent conversation loop | Available |
+| Anthropic adapter | Available |
+| OpenAI-compatible adapter (OpenAI and FCI) | Available |
+| CLI and FastAPI interfaces | Available |
+| Tool registration | Available |
+| Google Drive listing, download, and reading | Available |
+| Schema validation | Available |
+| API-key authentication | Available (demo only) |
+| Scope authorization | Available |
+| Sliding-window rate limiter | Available (in-memory) |
+| Tool execution and audit logging | Available (in-memory) |
+| MarkItDown conversion | Available |
+| OpenAI embeddings | Planned |
+| Qdrant memory storage and retrieval | Planned |
 
-Do pipeline trong `registry/registry.py` chưa hoàn thiện, các tool chưa thể hoạt động đầy đủ dù server và giao diện đã khởi động thành công.
+The `list_drive_files` tool now runs end to end through the registry. File conversion and RAG memory still contain planned implementations, and the in-memory authentication, rate limiting, and audit storage are intended for demonstration rather than production use.
 
-## Bảo mật
+## Research directions
 
-- Không hard-code API key hoặc credentials trong source code.
-- Không public `.env` hay JSON key của Google service account.
-- CORS trong `server.py` hiện cho phép mọi origin; cần giới hạn `allow_origins` trước khi deploy production.
-- User database và service API key hiện chỉ là dữ liệu demo trong source code, không phù hợp cho production.
-- Chỉ bind Qdrant vào `127.0.0.1` khi chạy local; cần authentication và network policy phù hợp nếu expose ra bên ngoài.
+- Policy-aware and capability-based tool access.
+- Sandboxed execution for untrusted tools.
+- Durable memory with retrieval-quality evaluation.
+- Multi-agent orchestration and delegation.
+- Model fallback, routing, and provider health checks.
+- Tool-selection, latency, reliability, and safety benchmarks.
+
+## Testing
+
+Run the test suite from the project root:
+
+```bash
+python -m unittest discover -v
+```
+
+## Security notes
+
+- Do not hard-code or commit credentials.
+- The in-memory users and service API keys are development fixtures, not a production identity system.
+- CORS currently permits all origins and must be restricted before deployment.
+- Keep local Qdrant bound to `127.0.0.1`; use authentication and network controls when exposing it remotely.
+- Local file access should be sandboxed or allowlisted before use in a multi-user environment.

@@ -1,20 +1,15 @@
-"""
-Embedding Service - Uses OpenAI text-embedding-3-small.
-"""
+"""Create vector embeddings for memory storage and retrieval."""
 
 from config import OPENAI_API_KEY, EMBEDDING_MODEL
 
 
 def embed_texts(texts: list[str]) -> list[list[float]]:
-    """Embed a list of texts into vectors."""
-    # TODO: Implement using OpenAI embeddings API
-    # - Create OpenAI client with OPENAI_API_KEY
-    # - Call embeddings.create(input=texts, model=EMBEDDING_MODEL)
-    # - Return list of embedding vectors
+    """Convert a batch of texts into embedding vectors."""
+    # TODO: Request embeddings with OPENAI_API_KEY and EMBEDDING_MODEL.
     pass
 
 
 def embed_query(query: str) -> list[float]:
-    """Embed a single query text."""
-    # TODO: Implement using embed_texts
+    """Convert one search query into an embedding vector."""
+    # TODO: Reuse embed_texts and return the first vector.
     pass

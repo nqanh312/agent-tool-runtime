@@ -1,9 +1,11 @@
+"""Define the metadata required to register an agent tool."""
+
 from typing import Callable
 from pydantic import BaseModel
 
 
 class ToolDefinition(BaseModel):
-    """Definition of a tool in the registry."""
+    """Describe a callable tool and its access requirements."""
     name: str
     description: str
     input_schema: dict

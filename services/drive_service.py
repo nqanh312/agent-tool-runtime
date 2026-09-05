@@ -1,12 +1,10 @@
-"""
-Google Drive Service - Wraps Google Drive API v3.
-Supports listing files and downloading file content.
-"""
+"""List and download files through the Google Drive API."""
 
 import io
 import os
 import re
 import tempfile
+from urllib.parse import parse_qs, urlparse
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
@@ -17,12 +15,36 @@ SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 
 _service = None
 
-# Drive resource IDs only contain URL-safe characters. Validating the ID also
-# prevents user input from changing the `q` expression sent to Google Drive.
+# Prevent folder IDs from altering the Drive query expression.
 _DRIVE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
+def _normalize_folder_id(folder_reference: str | None) -> str | None:
+    """Return a Drive folder ID from either a raw ID or a Drive URL."""
+    if not folder_reference:
+        return None
+
+    value = folder_reference.strip()
+    if _DRIVE_ID_PATTERN.fullmatch(value):
+        return value
+
+    parsed = urlparse(value)
+    if parsed.scheme in {"http", "https"} and parsed.hostname == "drive.google.com":
+        folder_match = re.search(r"/folders/([A-Za-z0-9_-]+)", parsed.path)
+        if folder_match:
+            return folder_match.group(1)
+
+        query_id = parse_qs(parsed.query).get("id", [None])[0]
+        if query_id and _DRIVE_ID_PATTERN.fullmatch(query_id):
+            return query_id
+
+    raise ValueError(
+        "folder_id must be a Drive folder ID or a drive.google.com folder URL"
+    )
+
+
 def _get_service():
+    """Create the Drive client lazily and reuse it for later requests."""
     global _service
     if _service is None:
         creds_path = GOOGLE_SERVICE_ACCOUNT_FILE
@@ -48,9 +70,9 @@ def list_files(folder_id: str | None = None, page_size: int = 100) -> list[dict]
     if not 1 <= page_size <= 1000:
         raise ValueError("page_size must be between 1 and 1000")
 
-    effective_folder_id = folder_id or GOOGLE_DRIVE_FOLDER_ID or None
-    if effective_folder_id and not _DRIVE_ID_PATTERN.fullmatch(effective_folder_id):
-        raise ValueError("folder_id contains invalid characters")
+    effective_folder_id = _normalize_folder_id(
+        folder_id or GOOGLE_DRIVE_FOLDER_ID or None
+    )
 
     service = _get_service()
 
@@ -99,7 +121,7 @@ def download_file(file_id: str) -> dict:
     mime_type = file_meta.get("mimeType", "")
     file_name = file_meta.get("name", "")
 
-    # Google Docs/Sheets/Slides → export to a compatible format
+    # Export Google-native files to formats supported by the file reader.
     export_map = {
         "application/vnd.google-apps.document": ("application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".docx"),
         "application/vnd.google-apps.spreadsheet": ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".xlsx"),

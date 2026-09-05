@@ -1,6 +1,4 @@
-"""
-Vector Store Service - Qdrant for agent long-term memory.
-"""
+"""Persist and retrieve the agent's long-term memory in Qdrant."""
 
 import uuid
 from config import QDRANT_HOST, QDRANT_PORT, MEMORY_COLLECTION, EMBEDDING_DIM
@@ -8,35 +6,23 @@ from config import QDRANT_HOST, QDRANT_PORT, MEMORY_COLLECTION, EMBEDDING_DIM
 
 def ensure_collection():
     """Ensure the Qdrant collection exists."""
-    # TODO: Implement using QdrantClient
-    # - Connect to Qdrant at QDRANT_HOST:QDRANT_PORT
-    # - Check if MEMORY_COLLECTION exists
-    # - If not, create it with EMBEDDING_DIM and cosine distance
+    # TODO: Create a cosine-distance collection when it does not exist.
     pass
 
 
 def save_memory(text: str, embedding: list[float], metadata: dict = None):
-    """Save a single memory entry to the vector store."""
-    # TODO: Implement
-    # - Call ensure_collection()
-    # - Create a PointStruct with uuid, embedding, and payload (text + metadata)
-    # - Upsert into MEMORY_COLLECTION
+    """Store one text, its vector, and metadata as a Qdrant point."""
+    # TODO: Ensure the collection exists, then upsert a UUID-backed point.
     pass
 
 
 def search_memory(query_vector: list[float], top_k: int = 5) -> list[dict]:
-    """Search memory by semantic similarity."""
-    # TODO: Implement
-    # - Call ensure_collection()
-    # - Query Qdrant with query_vector, limit=top_k
-    # - Return list of {"text": ..., "score": ..., "metadata": ...}
+    """Return the memories most similar to a query vector."""
+    # TODO: Query the collection and normalize text, score, and metadata.
     pass
 
 
 def list_all_memories(limit: int = 100) -> list[dict]:
-    """List all stored memories."""
-    # TODO: Implement
-    # - Call ensure_collection()
-    # - Scroll through MEMORY_COLLECTION
-    # - Return list of {"id": ..., "text": ..., "metadata": ...}
+    """Return stored memories without semantic ranking."""
+    # TODO: Scroll the collection and normalize each point for callers.
     pass

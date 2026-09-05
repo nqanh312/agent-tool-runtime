@@ -1,6 +1,4 @@
-"""
-Read File Tool - Read and convert files to Markdown using MarkItDown.
-"""
+"""Expose local file-to-Markdown conversion as an agent tool."""
 
 from registry.models import ToolDefinition
 from services.file_reader import read_file

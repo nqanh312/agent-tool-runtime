@@ -83,6 +83,65 @@
             background: #1e293b;
             border: 1px solid #334155;
             border-bottom-left-radius: 4px;
+            white-space: normal;
+        }
+        .message.assistant h1,
+        .message.assistant h2,
+        .message.assistant h3,
+        .message.assistant h4 {
+            margin: 14px 0 8px;
+            line-height: 1.3;
+        }
+        .message.assistant h1:first-child,
+        .message.assistant h2:first-child,
+        .message.assistant h3:first-child {
+            margin-top: 0;
+        }
+        .message.assistant p,
+        .message.assistant ul,
+        .message.assistant ol,
+        .message.assistant pre,
+        .message.assistant table,
+        .message.assistant blockquote {
+            margin: 8px 0;
+        }
+        .message.assistant ul,
+        .message.assistant ol {
+            padding-left: 24px;
+        }
+        .message.assistant code {
+            background: #0f172a;
+            border-radius: 4px;
+            padding: 2px 5px;
+            font-family: Consolas, monospace;
+        }
+        .message.assistant pre {
+            overflow-x: auto;
+            background: #0f172a;
+            border-radius: 8px;
+            padding: 12px;
+            white-space: pre;
+        }
+        .message.assistant pre code { padding: 0; }
+        .message.assistant table {
+            border-collapse: collapse;
+            width: 100%;
+        }
+        .message.assistant th,
+        .message.assistant td {
+            border: 1px solid #475569;
+            padding: 6px 10px;
+            text-align: left;
+        }
+        .message.assistant th { background: #334155; }
+        .message.assistant blockquote {
+            border-left: 3px solid #64748b;
+            color: #cbd5e1;
+            padding-left: 12px;
+        }
+        .message.assistant a { color: #60a5fa; }
+        .message.assistant > :last-child { margin-bottom: 0; }
+        .message.assistant > :first-child { margin-top: 0; }
         }
 
         .message .tools-badge {
@@ -277,13 +336,18 @@ function autoResize(el) {
     el.style.height = Math.min(el.scrollHeight, 120) + 'px';
 }
 
-function addMessage(text, role, toolsUsed = []) {
+function addMessage(text, role, toolsUsed = [], safeHtml = '') {
     document.getElementById('welcome')?.remove();
 
     const container = document.getElementById('chatContainer');
     const div = document.createElement('div');
     div.className = 'message ' + role;
-    div.textContent = text;
+    if (role === 'assistant' && safeHtml) {
+        // response_html is rendered and allowlist-sanitized by the server.
+        div.innerHTML = safeHtml;
+    } else {
+        div.textContent = text;
+    }
 
     if (toolsUsed.length > 0) {
         const badge = document.createElement('div');
@@ -332,7 +396,7 @@ async function sendMessage() {
             body: JSON.stringify({ session_id: SESSION_ID, message })
         });
         const data = await res.json();
-        addMessage(data.response, 'assistant', data.tools_used);
+        addMessage(data.response, 'assistant', data.tools_used, data.response_html);
     } catch (err) {
         addMessage('Error: ' + err.message, 'assistant');
     } finally {

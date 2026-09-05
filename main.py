@@ -1,6 +1,4 @@
-"""
-CLI Interface - Interactive chat with the Agent.
-"""
+"""Provide an interactive command-line interface for the agent."""
 
 import json
 import sys
@@ -8,6 +6,7 @@ from agent import Agent
 
 
 def print_help():
+    """Print the commands supported by the interactive shell."""
     print("""
 === Agent CLI Commands ===
   /quit     - Exit the application
@@ -20,6 +19,7 @@ def print_help():
 
 
 def main():
+    """Run the interactive chat loop."""
     print("\n" + "="*60)
     print("  ASSIGNMENT 1 - AI Agent with Tool Registry")
     print("  Capabilities: Google Drive | Read File | RAG Memory")
@@ -39,7 +39,7 @@ def main():
         if not user_input:
             continue
 
-        # Handle commands
+        # Handle local commands before sending input to the model.
         if user_input.lower() == "/quit":
             print("Goodbye!")
             break
@@ -78,7 +78,6 @@ def main():
                 print(f"\n[Error accessing memory: {e}]")
             continue
 
-        # Run agent
         try:
             response = agent.run(user_input)
             print(f"\nAssistant: {response}")

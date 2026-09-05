@@ -1,23 +1,15 @@
-"""
-Memory Tools - Long-term memory using RAG (embed + vector search).
-"""
+"""Expose long-term memory operations as agent tools."""
 
 from datetime import datetime
 from registry.models import ToolDefinition
 from services import embedding, vectorstore
 
 
-# ============================================================
-# Tool 1: SAVE MEMORY
-# ============================================================
+# Store a memory with semantic-search metadata.
 
 def save_memory(content: str, category: str = "general") -> dict:
     """Save information to long-term memory."""
-    # TODO: Implement save_memory
-    # - Embed content using embedding.embed_query(content)
-    # - Create metadata with category and timestamp
-    # - Save to vectorstore using vectorstore.save_memory(text, embedding, metadata)
-    # - Return {"status": "saved", "content_preview": ..., "category": ...}
+    # TODO: Embed the content and store it with category and timestamp metadata.
     pass
 
 
@@ -48,16 +40,11 @@ save_memory_tool = ToolDefinition(
 )
 
 
-# ============================================================
-# Tool 2: SEARCH MEMORY
-# ============================================================
+# Retrieve memories by semantic similarity.
 
 def search_memory(query: str, top_k: int = 5) -> dict:
     """Search long-term memory for relevant information."""
-    # TODO: Implement search_memory
-    # - Embed query using embedding.embed_query(query)
-    # - Search vectorstore using vectorstore.search_memory(query_vector, top_k)
-    # - Return {"query": ..., "results_count": ..., "memories": ...}
+    # TODO: Embed the query and return the top matching memories.
     pass
 
 

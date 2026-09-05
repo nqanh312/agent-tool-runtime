@@ -1,15 +1,13 @@
-"""
-Google Drive Tools - List files and read file content.
-"""
+"""Expose Google Drive operations as agent tools."""
+
+import os
 
 from registry.models import ToolDefinition
 from services import drive_service
 from services.file_reader import read_file
 
 
-# ============================================================
-# Tool 1: LIST DRIVE FILES
-# ============================================================
+# List files visible to the configured service account.
 
 def list_drive_files(folder_id: str = "") -> dict:
     """List all files in Google Drive."""
@@ -43,13 +41,10 @@ list_files_tool = ToolDefinition(
 )
 
 
-# ============================================================
-# Tool 2: READ DRIVE FILE
-# ============================================================
+# Download and convert one Drive file.
 
-def read_drive_file(file_id: str) -> dict:
-    """Download a file from Google Drive and read its content."""
-    import os
+def get_drive_file(file_id: str) -> dict:
+    """Download one Drive file and return its Markdown content."""
     download = drive_service.download_file(file_id=file_id)
     temp_path = download["temp_path"]
     try:
@@ -61,16 +56,19 @@ def read_drive_file(file_id: str) -> dict:
         "file_name": download["file_name"],
         "mime_type": download["mime_type"],
         "content": result["content"],
+        "truncated": result["truncated"],
+        "total_characters": result["total_characters"],
     }
 
 
 read_file_tool = ToolDefinition(
-    name="read_drive_file",
+    name="get_drive_file",
     description=(
-        "Read the content of a file from Google Drive by its file ID. "
-        "Supports many formats: PDF, DOCX, XLSX, PPTX, images, Google Docs/Sheets/Slides, text files, and more. "
-        "Content is converted to Markdown using MarkItDown. "
-        "Use list_drive_files first to get file IDs."
+        "Download and read one Google Drive file by its file ID. "
+        "The result contains Markdown content suitable for displaying in chat. "
+        "Supports PDF, DOCX, XLS/XLSX, PPTX, Google Docs/Sheets/Slides, "
+        "HTML, CSV, JSON, XML, and text files. "
+        "Always use list_drive_files first to find the correct file ID."
     ),
     input_schema={
         "type": "object",
@@ -83,8 +81,11 @@ read_file_tool = ToolDefinition(
         "required": ["file_id"],
     },
     required_scopes=["drive:read"],
-    handler=read_drive_file,
+    handler=get_drive_file,
 )
+
+# Backward-compatible Python alias. The model-facing tool name is get_drive_file.
+read_drive_file = get_drive_file
 
 
 ALL_DRIVE_TOOLS = [list_files_tool, read_file_tool]
