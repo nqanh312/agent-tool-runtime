@@ -50,6 +50,14 @@ QDRANT_URL = os.getenv("QDRANT_URL", "").strip()
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "").strip()
 MEMORY_COLLECTION = os.getenv("MEMORY_COLLECTION", "agent_memory")
 
+# Durable conversation history
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql+psycopg://agent:agent@localhost:5432/agent_db",
+).strip()
+CHAT_CONTEXT_MAX_TOKENS = int(os.getenv("CHAT_CONTEXT_MAX_TOKENS", "12000"))
+SERVICE_API_KEY = os.getenv("SERVICE_API_KEY", "sk-admin-001").strip()
+
 # Google Drive configuration
 GOOGLE_SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "credentials.json")
 GOOGLE_DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID", "")

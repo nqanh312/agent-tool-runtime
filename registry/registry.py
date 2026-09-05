@@ -216,6 +216,7 @@ class ToolRegistry:
 
     def __init__(self):
         self._tools: dict[str, ToolDefinition] = {}
+        self._audit_entries: list[dict] = []
 
     def register(self, tool: ToolDefinition):
         """Add or replace a tool definition by name."""
@@ -276,21 +277,23 @@ class ToolRegistry:
                 result = execute_tool(tool, validated_arguments)
             finally:
                 _current_user.reset(user_token)
-            audit_log(user, tool_name, validated_arguments, result=result)
+            entry = audit_log(user, tool_name, validated_arguments, result=result)
+            self._audit_entries.append(entry)
             return {"result": result}
         except Exception as exc:
             error_message = str(exc) or exc.__class__.__name__
-            audit_log(
+            entry = audit_log(
                 user,
                 tool_name,
                 audit_arguments,
                 error=error_message,
             )
+            self._audit_entries.append(entry)
             return {
                 "error": error_message,
                 "error_type": exc.__class__.__name__,
             }
 
     def get_audit_log(self) -> list[dict]:
-        """Return all audit entries recorded by this process."""
-        return deepcopy(AUDIT_LOG)
+        """Return audit entries produced by this registry instance."""
+        return deepcopy(self._audit_entries)

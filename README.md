@@ -21,7 +21,8 @@ The project explores a practical question: **how can an AI agent use external ca
 - FCI turn routing that selects RAG, Drive browsing, Drive reading, artifact saving, or general chat in the same classification call.
 - Sanitized Markdown rendering for headings, tables, lists, code blocks, and links in web chat.
 - Semantic long-term memory using OpenAI or FCI embeddings and Qdrant.
-- CLI and FastAPI interfaces with session-isolated conversation history.
+- PostgreSQL-backed conversation history with a responsive ChatGPT-style sidebar.
+- CLI and FastAPI interfaces with user-isolated conversation history.
 
 ## Architecture
 
@@ -61,7 +62,9 @@ This separation keeps model reasoning, policy enforcement, and external service 
 |   |-- embedding.py         # OpenAI embedding adapter
 |   |-- file_reader.py       # Document-to-Markdown conversion
 |   |-- llm.py               # Anthropic/OpenAI/FCI model adapters
+|   |-- conversations.py     # PostgreSQL conversation repository
 |   `-- vectorstore.py       # Qdrant memory adapter
+|-- migrations/              # Alembic database migrations
 |-- tools/
 |   |-- google_drive.py      # Google Drive tools
 |   |-- memory.py            # Long-term memory tools
@@ -77,7 +80,7 @@ This separation keeps model reasoning, policy enforcement, and external service 
 - Python 3.10 or later
 - An API key for the selected model provider (Anthropic, OpenAI, or FCI)
 - An API key authorized for the selected OpenAI or FCI embedding model
-- Docker Desktop or an accessible Qdrant instance
+- Docker Desktop or accessible PostgreSQL and Qdrant instances
 - A Google Cloud service account for Google Drive integration
 
 ## Getting started
@@ -140,6 +143,10 @@ QDRANT_HOST=localhost
 QDRANT_PORT=6333
 MEMORY_COLLECTION=agent_memory
 
+DATABASE_URL=postgresql+psycopg://agent:agent@localhost:5432/agent_db
+CHAT_CONTEXT_MAX_TOKENS=12000
+SERVICE_API_KEY=sk-admin-001
+
 GOOGLE_SERVICE_ACCOUNT_FILE=credentials.json
 GOOGLE_DRIVE_FOLDER_ID=your_google_drive_folder_id
 ```
@@ -191,24 +198,27 @@ Qdrant persistence implementation.
 > [!WARNING]
 > Never commit `.env`, API keys, or service-account credentials. The default `.gitignore` excludes these files.
 
-### 4. Start Qdrant
+### 4. Start PostgreSQL, Qdrant, and apply migrations
 
 ```bash
-docker run -d --name agent-tool-runtime-qdrant \
-  --restart unless-stopped \
-  -p 127.0.0.1:6333:6333 \
-  -v agent_tool_runtime_qdrant:/qdrant/storage \
-  qdrant/qdrant
+docker compose up -d
+alembic upgrade head
 ```
+
+Conversation titles and messages are stored in PostgreSQL. The application does not
+create or alter tables automatically at startup; run Alembic whenever a new migration
+is added. `DATABASE_URL` can point to a managed PostgreSQL instance in deployment.
+PostgreSQL and Qdrant run under the same `agent-tool-runtime` Compose project and
+store data in named Docker volumes.
 
 The Qdrant dashboard will be available at [http://localhost:6333/dashboard](http://localhost:6333/dashboard).
 
 Useful container commands:
 
 ```bash
-docker stop agent-tool-runtime-qdrant
-docker start agent-tool-runtime-qdrant
-docker logs agent-tool-runtime-qdrant
+docker compose stop
+docker compose start
+docker compose logs qdrant
 ```
 
 ### 5. Configure Google Drive (optional)
@@ -250,8 +260,10 @@ Open [http://localhost:9004](http://localhost:9004). The health endpoint is avai
 
 | Method | Endpoint | Description |
 | --- | --- | --- |
-| `POST` | `/api/chat` | Send a message to an agent session |
-| `POST` | `/api/clear` | Clear a session's conversation history |
+| `POST` | `/api/chat` | Send a message, creating a conversation when needed |
+| `GET` | `/api/conversations` | List the current user's conversations |
+| `GET` | `/api/conversations/{id}/messages` | Load a page of stored messages |
+| `POST` | `/api/clear` | Evict transient Agent state without deleting chat history |
 | `GET` | `/api/audit?session_id=...` | Retrieve tool-call audit entries |
 | `GET` | `/api/memories?session_id=...` | List the user's current facts and preferences |
 | `GET` | `/api/documents?session_id=...` | List saved document sources and chunk counts |
@@ -262,7 +274,7 @@ Example request:
 ```bash
 curl -X POST http://localhost:9004/api/chat \
   -H "Content-Type: application/json" \
-  -d '{"session_id":"demo","message":"List my Drive files."}'
+  -d '{"conversation_id":null,"client_message_id":"b2c28f79-8514-45f1-8aac-1b20beccefda","message":"List my Drive files."}'
 ```
 
 ## Development status
@@ -284,8 +296,10 @@ curl -X POST http://localhost:9004/api/chat \
 | OpenAI and FCI embeddings | Available |
 | FCI structured fact/preference extraction | Available |
 | Qdrant hybrid memory (vector + BM25) | Available |
+| PostgreSQL conversation history and pagination | Available |
+| Responsive conversation-history sidebar | Available |
 
-The in-memory authentication, rate limiting, and audit storage are intended for demonstration rather than production use. Long-term memory itself is persisted in Qdrant and remains available after conversation history is cleared or the browser is reloaded.
+The in-memory authentication, rate limiting, and audit storage are intended for demonstration rather than production use. Chat history and current artifact state are persisted in PostgreSQL; long-term semantic memory is persisted separately in Qdrant.
 
 ## Research directions
 
@@ -310,4 +324,5 @@ python -m unittest discover -v
 - The in-memory users and service API keys are development fixtures, not a production identity system.
 - CORS currently permits all origins and must be restricted before deployment.
 - Keep local Qdrant bound to `127.0.0.1`; use authentication and network controls when exposing it remotely.
+- Keep local PostgreSQL bound to `127.0.0.1`; use TLS and managed credentials when deploying it remotely.
 - Local file access should be sandboxed or allowlisted before use in a multi-user environment.

@@ -4,7 +4,9 @@ import hashlib
 import json
 import sys
 import uuid
+import tiktoken
 from config import (
+    CHAT_CONTEXT_MAX_TOKENS,
     MEMORY_EXTRACTION_MIN_CONFIDENCE,
     MEMORY_RELEVANCE_MIN_SEMANTIC_SCORE,
 )
@@ -50,12 +52,15 @@ class Agent:
         self,
         service_api_key: str = "sk-admin-001",
         llm_client: LLMClient | None = None,
+        conversation_history: list[dict] | None = None,
+        last_artifact: dict | None = None,
     ):
         self.llm = llm_client or create_llm_client()
         self.model = self.llm.model
         self.service_api_key = service_api_key
-        self.conversation_history: list[dict] = []
-        self.last_artifact: dict | None = None
+        self.conversation_history = list(conversation_history or [])
+        self.last_artifact = dict(last_artifact) if last_artifact else None
+        self._tokenizer = tiktoken.get_encoding("cl100k_base")
 
         # Register tools once so every model request uses the same catalog.
         self.registry = ToolRegistry()
@@ -166,6 +171,24 @@ class Agent:
                 return True
         return False
 
+    def _messages_for_model(self) -> list[dict]:
+        """Return the newest coherent history that fits the configured budget."""
+        selected: list[dict] = []
+        used_tokens = 0
+        for message in reversed(self.conversation_history):
+            serialized = json.dumps(message, ensure_ascii=False, default=str)
+            message_tokens = len(self._tokenizer.encode(serialized)) + 4
+            if selected and used_tokens + message_tokens > CHAT_CONTEXT_MAX_TOKENS:
+                break
+            selected.append(message)
+            used_tokens += message_tokens
+
+        selected.reverse()
+        # A provider tool result must never be detached from its tool request.
+        while selected and selected[0].get("role") == "tool":
+            selected.pop(0)
+        return selected
+
     def run(self, user_message: str) -> str:
         """Run the agent loop until Claude returns a final text response."""
         print(f"\n{'#'*60}")
@@ -270,7 +293,7 @@ class Agent:
             response = self.llm.complete(
                 system_prompt=turn_system_prompt,
                 tools=tools,
-                messages=self.conversation_history,
+                messages=self._messages_for_model(),
             )
 
             print(f">>> Model stop_reason: {response.stop_reason}")
