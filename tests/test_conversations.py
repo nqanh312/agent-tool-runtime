@@ -17,6 +17,12 @@ from services.conversations import (
     make_title,
 )
 
+TEST_USER = {
+    "user_id": "user-1", "username": "test", "display_name": "Test",
+    "role": "user", "is_active": True, "must_change_password": False,
+    "permissions": ["chat:use", "conversation:read", "conversation:write"],
+}
+
 
 class ConversationRepositoryTests(unittest.TestCase):
     def setUp(self):
@@ -133,9 +139,11 @@ class PersistentChatApiTests(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(server.app)
         server.sessions.clear()
+        server.app.dependency_overrides[server.current_principal] = lambda: TEST_USER
 
     def tearDown(self):
         server.sessions.clear()
+        server.app.dependency_overrides.clear()
 
     def test_agent_is_rehydrated_from_messages_and_artifact_after_restart(self):
         repository = unittest.mock.MagicMock()
@@ -148,10 +156,10 @@ class PersistentChatApiTests(unittest.TestCase):
             patch.object(server, "conversation_repository", repository),
             patch.object(server, "Agent") as agent_class,
         ):
-            server._get_conversation_agent("conversation-1", "user-1")
+            server._get_conversation_agent("conversation-1", TEST_USER)
 
         agent_class.assert_called_once_with(
-            service_api_key=server.SERVICE_API_KEY,
+            principal=TEST_USER,
             conversation_history=[
                 {"role": "user", "content": "old question"},
                 {"role": "assistant", "content": "old answer"},
@@ -227,11 +235,11 @@ class PersistentChatApiTests(unittest.TestCase):
 
     def test_ui_contains_left_history_sidebar_and_lazy_new_chat(self):
         body = self.client.get("/").text
-        self.assertIn('id="historySidebar"', body)
+        self.assertIn('id="sidebar"', body)
         self.assertIn("/api/conversations", body)
         self.assertIn("function newChat()", body)
-        self.assertIn("localStorage.removeItem(SESSION_STORAGE_KEY)", body)
-        self.assertNotIn("fetch(API+'/api/clear'", body)
+        self.assertIn("localStorage.removeItem(ACTIVE_KEY)", body)
+        self.assertNotIn("apiFetch('/api/clear'", body)
 
 
 if __name__ == "__main__":

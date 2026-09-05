@@ -26,7 +26,7 @@ read_file_tool = ToolDefinition(
         },
         "required": ["file_path"],
     },
-    required_scopes=["drive:read"],
+    required_permissions=["drive:read"],
     handler=read_local_file,
 )
 

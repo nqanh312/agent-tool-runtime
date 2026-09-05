@@ -13,6 +13,7 @@ from services.conversations import (
     ConversationRepository,
     SessionLocal,
 )
+from services.auth import User
 
 
 @unittest.skipUnless(
@@ -24,6 +25,16 @@ class PostgreSQLConversationTests(unittest.TestCase):
         self.repository = ConversationRepository(SessionLocal)
         self.user_id = f"integration-{uuid.uuid4()}"
         self.conversation_ids: list[str] = []
+        with SessionLocal.begin() as session:
+            session.add(User(
+                id=self.user_id,
+                username=f"integration_{uuid.uuid4().hex}",
+                display_name="Integration test",
+                password_hash=None,
+                role_name="guest",
+                is_active=False,
+                must_change_password=True,
+            ))
 
     def tearDown(self):
         with SessionLocal.begin() as session:
@@ -31,6 +42,9 @@ class PostgreSQLConversationTests(unittest.TestCase):
                 row = session.get(Conversation, uuid.UUID(conversation_id))
                 if row is not None:
                     session.delete(row)
+            user = session.get(User, self.user_id)
+            if user is not None:
+                session.delete(user)
 
     def test_round_trip_survives_a_new_repository_instance(self):
         conversation = self.repository.create_conversation(

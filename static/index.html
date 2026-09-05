@@ -2,195 +2,88 @@
 <html lang="vi">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Agent - Assignment 1</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Agent Tool Runtime</title>
     <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        :root { color-scheme: dark; --bg:#0f172a; --surface:#172033; --surface-2:#1e293b; --line:#334155; --muted:#94a3b8; --text:#e2e8f0; --blue:#3b82f6; }
-        body { height:100vh; overflow:hidden; background:var(--bg); color:var(--text); font-family:"Segoe UI",system-ui,-apple-system,sans-serif; }
-        button, textarea { font:inherit; } button { color:inherit; }
-        .app-shell { display:flex; height:100vh; min-width:0; }
-
-        .history-sidebar { width:280px; flex:0 0 280px; display:flex; flex-direction:column; background:#111827; border-right:1px solid var(--line); transition:width .2s,flex-basis .2s,transform .2s; z-index:50; }
-        .history-sidebar.collapsed { width:68px; flex-basis:68px; }
-        .sidebar-header { display:flex; gap:8px; align-items:center; padding:14px 12px; border-bottom:1px solid var(--line); }
-        .new-chat-btn,.icon-btn,.btn { border:1px solid #475569; border-radius:8px; background:#243146; cursor:pointer; transition:background .15s,border-color .15s; }
-        .new-chat-btn:hover,.icon-btn:hover,.btn:hover { background:#334155; border-color:#64748b; }
-        .new-chat-btn { flex:1; min-width:0; padding:9px 11px; text-align:left; white-space:nowrap; }
-        .icon-btn { width:36px; height:36px; flex:0 0 36px; display:grid; place-items:center; }
-        .history-sidebar.collapsed .new-chat-label,.history-sidebar.collapsed .history-content { display:none; }
-        .history-sidebar.collapsed .new-chat-btn { flex:0 0 36px; text-align:center; }
-        .history-sidebar.collapsed .sidebar-header { flex-direction:column; }
-        .history-content { overflow-y:auto; padding:10px 8px 18px; }
-        .history-group { margin-bottom:16px; }
-        .history-group-title { padding:5px 9px; color:#64748b; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; }
-        .conversation-item { width:100%; display:block; overflow:hidden; padding:10px 11px; border:1px solid transparent; border-radius:8px; background:transparent; color:#cbd5e1; cursor:pointer; text-align:left; text-overflow:ellipsis; white-space:nowrap; }
-        .conversation-item:hover { background:#1e293b; }
-        .conversation-item.active { background:#243146; border-color:#3f506a; color:#fff; }
-        .history-empty,.history-error { padding:24px 10px; color:#64748b; font-size:13px; line-height:1.5; text-align:center; }
-        .history-error { color:#fca5a5; }
-        .load-more { width:100%; margin-top:4px; padding:8px; border:0; background:transparent; color:#60a5fa; cursor:pointer; }
-        .sidebar-backdrop { display:none; }
-
-        .main-shell { min-width:0; flex:1; display:flex; flex-direction:column; }
-        .header { min-height:78px; display:flex; align-items:center; justify-content:space-between; gap:16px; padding:14px 24px; background:var(--surface-2); border-bottom:1px solid var(--line); }
-        .header-title { min-width:0; }
-        .header h1 { overflow:hidden; color:#f8fafc; font-size:18px; font-weight:650; text-overflow:ellipsis; white-space:nowrap; }
-        .subtitle { margin-top:3px; color:var(--muted); font-size:12px; }
-        .header-actions { display:flex; gap:8px; align-items:center; }
-        .btn { padding:7px 12px; color:#cbd5e1; font-size:13px; }
-        .mobile-history-btn { display:none; }
-        .count { display:inline-flex; min-width:18px; height:18px; margin-left:4px; padding:0 5px; align-items:center; justify-content:center; border-radius:10px; background:#065f46; color:#a7f3d0; font-size:11px; font-weight:700; }
-        .chat-container { min-height:0; flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:16px; padding:24px clamp(20px,6vw,88px); }
-        .message { max-width:min(80%,850px); padding:12px 16px; border-radius:12px; font-size:14px; line-height:1.6; overflow-wrap:anywhere; }
-        .message.user { align-self:flex-end; background:var(--blue); color:#fff; border-bottom-right-radius:4px; white-space:pre-wrap; }
-        .message.assistant { align-self:flex-start; background:var(--surface-2); border:1px solid var(--line); border-bottom-left-radius:4px; }
-        .message.assistant :is(h1,h2,h3,h4) { margin:14px 0 8px; line-height:1.3; }
-        .message.assistant > :first-child { margin-top:0; } .message.assistant > :last-child { margin-bottom:0; }
-        .message.assistant :is(p,ul,ol,pre,table,blockquote) { margin:8px 0; }
-        .message.assistant :is(ul,ol) { padding-left:24px; }
-        .message.assistant code { padding:2px 5px; border-radius:4px; background:var(--bg); font-family:Consolas,monospace; }
-        .message.assistant pre { overflow-x:auto; padding:12px; border-radius:8px; background:var(--bg); } .message.assistant pre code { padding:0; }
-        .message.assistant table { width:100%; border-collapse:collapse; } .message.assistant :is(th,td) { padding:6px 10px; border:1px solid #475569; text-align:left; }
-        .message.assistant th { background:#334155; } .message.assistant blockquote { padding-left:12px; border-left:3px solid #64748b; color:#cbd5e1; } .message.assistant a { color:#60a5fa; }
-        .tools-badge { display:flex; flex-wrap:wrap; gap:4px; margin-top:8px; }
-        .tool-tag { padding:2px 8px; border-radius:10px; background:#065f46; color:#6ee7b7; font-family:monospace; font-size:11px; }
-        .welcome { margin:auto; padding:40px; color:#64748b; text-align:center; }
-        .welcome h2 { margin-bottom:10px; color:var(--muted); font-size:21px; } .welcome p { font-size:14px; }
-        .welcome .caps { display:flex; flex-wrap:wrap; justify-content:center; gap:10px; margin-top:20px; }
-        .welcome .cap { padding:7px 13px; border:1px solid var(--line); border-radius:8px; background:var(--surface-2); font-size:12px; }
-        .older-btn { align-self:center; padding:6px 12px; border:1px solid var(--line); border-radius:16px; background:var(--surface); color:#93c5fd; cursor:pointer; }
-        .typing { display:none; align-self:flex-start; gap:4px; padding:12px 16px; border:1px solid var(--line); border-radius:12px; background:var(--surface-2); }
-        .typing.active { display:flex; } .typing span { width:8px; height:8px; border-radius:50%; background:#64748b; animation:bounce 1.4s infinite ease-in-out; }
-        .typing span:nth-child(2) { animation-delay:.2s; } .typing span:nth-child(3) { animation-delay:.4s; }
-        @keyframes bounce { 0%,80%,100% { transform:scale(.6);opacity:.4 } 40% { transform:scale(1);opacity:1 } }
-        .input-area { display:flex; gap:12px; padding:16px clamp(20px,6vw,88px); border-top:1px solid var(--line); background:var(--surface-2); }
-        .input-area textarea { min-height:44px; max-height:120px; flex:1; resize:none; padding:10px 14px; border:1px solid #475569; border-radius:10px; outline:none; background:var(--bg); color:var(--text); }
-        .input-area textarea:focus { border-color:var(--blue); }
-        .send-btn { align-self:flex-end; padding:11px 20px; border:0; border-radius:10px; background:var(--blue); color:#fff; font-weight:650; cursor:pointer; }
-        .send-btn:disabled { background:#475569; cursor:not-allowed; }
-
-        .side-panel { position:fixed; z-index:100; top:0; right:0; bottom:0; width:min(420px,100vw); display:none; flex-direction:column; border-left:1px solid var(--line); background:var(--surface-2); box-shadow:-12px 0 28px rgba(0,0,0,.24); }
-        .side-panel.open { display:flex; }
-        .panel-header { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:16px; border-bottom:1px solid var(--line); }
-        .panel-header h2 { font-size:16px; } .panel-body { flex:1; overflow-y:auto; padding:12px; color:var(--muted); font-family:monospace; font-size:12px; }
-        .panel-entry { margin-bottom:10px; padding:12px; border:1px solid var(--line); border-radius:8px; background:var(--bg); }
-        .entry-tag { display:inline-block; margin-bottom:7px; padding:2px 8px; border-radius:10px; background:#312e81; color:#c7d2fe; font-size:10px; text-transform:uppercase; }
-        .entry-text { color:var(--text); font-family:"Segoe UI",system-ui,sans-serif; font-size:13px; line-height:1.5; white-space:pre-wrap; }
-        .entry-meta { margin-top:8px; color:#64748b; font-size:10px; } .panel-empty { padding:24px 8px; color:#64748b; text-align:center; font-family:"Segoe UI",system-ui,sans-serif; }
-        .status-ok { color:#4ade80; } .status-fail { color:#f87171; }
-
-        @media (max-width:900px) { .subtitle { display:none; } .header { min-height:64px; padding:12px 16px; } .header-actions .btn-label { display:none; } .btn { padding:7px 9px; } }
-        @media (max-width:720px) {
-            .history-sidebar { position:fixed; inset:0 auto 0 0; width:min(300px,86vw); flex-basis:auto; transform:translateX(-100%); }
-            .history-sidebar.mobile-open { transform:translateX(0); } .history-sidebar.collapsed { width:min(300px,86vw); }
-            .history-sidebar.collapsed .new-chat-label,.history-sidebar.collapsed .history-content { display:block; }
-            .history-sidebar.collapsed .new-chat-btn { flex:1; text-align:left; } .history-sidebar.collapsed .sidebar-header { flex-direction:row; }
-            .sidebar-backdrop.open { position:fixed; inset:0; z-index:40; display:block; background:rgba(0,0,0,.55); }
-            .mobile-history-btn { display:grid; } #collapseSidebar { display:none; } .header h1 { font-size:15px; }
-            .chat-container,.input-area { padding-left:14px; padding-right:14px; } .message { max-width:92%; }
-        }
+        :root{--bg:#0b1020;--surface:#11182b;--surface2:#182238;--line:#28344d;--text:#e7edf7;--muted:#91a0b8;--accent:#6d5dfc;--danger:#ef6a74;--ok:#4ade80}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px system-ui,sans-serif}button,input,select,textarea{font:inherit}.hidden{display:none!important}.app{display:flex;height:100vh}.sidebar{width:280px;background:var(--surface);border-right:1px solid var(--line);padding:14px;overflow:auto;transition:transform .2s}.brand{font-weight:700;font-size:17px;margin:4px 0 16px}.row{display:flex;gap:8px;align-items:center}.grow{flex:1}.mobile-menu{display:none}.btn{border:1px solid var(--line);background:var(--surface2);color:var(--text);border-radius:8px;padding:8px 11px;cursor:pointer}.btn:hover{border-color:#7180a0}.primary{background:var(--accent);border-color:var(--accent)}.danger{color:#fecaca}.conversation{display:block;width:100%;margin:6px 0;padding:10px;border:0;border-radius:7px;text-align:left;background:transparent;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}.conversation.active,.conversation:hover{background:var(--surface2);color:var(--text)}.main{display:flex;flex:1;min-width:0;flex-direction:column}.header{display:flex;min-height:64px;padding:12px 18px;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);background:var(--surface)}.title{font-weight:700}.subtitle,.muted{color:var(--muted);font-size:12px}.chat{flex:1;overflow:auto;padding:28px max(18px,calc((100% - 850px)/2))}.welcome{text-align:center;margin:15vh auto;color:var(--muted)}.message{max-width:80%;padding:12px 15px;border-radius:12px;margin:12px 0;line-height:1.55;white-space:pre-wrap}.message.user{margin-left:auto;background:var(--accent)}.message.assistant{background:var(--surface2);white-space:normal}.message.assistant pre{overflow:auto}.tools{margin-top:8px;color:#b8b2ff;font-size:11px}.inputbar{display:flex;gap:10px;padding:16px max(18px,calc((100% - 850px)/2));border-top:1px solid var(--line);background:var(--surface)}textarea{flex:1;resize:none;max-height:130px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--text);padding:12px}.panel{position:fixed;z-index:20;right:0;top:0;bottom:0;width:min(520px,100vw);padding:16px;background:var(--surface);border-left:1px solid var(--line);overflow:auto;box-shadow:-10px 0 30px #0008}.panel-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}.card{border:1px solid var(--line);border-radius:9px;padding:12px;margin:9px 0;background:var(--surface2)}.card-title{font-weight:650}.tag{font-size:11px;color:#c4b5fd}.form{display:grid;gap:10px}.form input,.form select{width:100%;border:1px solid var(--line);border-radius:8px;padding:10px;background:var(--bg);color:var(--text)}.auth-screen{position:fixed;inset:0;z-index:50;display:grid;place-items:center;background:radial-gradient(circle at top,#252052,var(--bg) 55%)}.auth-card{width:min(410px,calc(100% - 32px));padding:28px;background:var(--surface);border:1px solid var(--line);border-radius:14px}.error{color:#fda4af;margin:8px 0}.success{color:var(--ok);white-space:pre-wrap}.modal{position:fixed;z-index:60;inset:0;display:grid;place-items:center;background:#000a}.modal-card{width:min(440px,calc(100% - 32px));padding:24px;background:var(--surface);border:1px solid var(--line);border-radius:12px}.user-card select{width:100px}.status-ok{color:var(--ok)}.status-fail{color:var(--danger)}@media(max-width:720px){.sidebar{position:fixed;z-index:15;inset:0 auto 0 0;transform:translateX(-100%)}.sidebar.open{transform:none}.mobile-menu{display:inline-block}.message{max-width:94%}.header .optional{display:none}}
     </style>
 </head>
 <body>
-<div class="app-shell">
-    <aside class="history-sidebar" id="historySidebar" aria-label="Lịch sử trò chuyện">
-        <div class="sidebar-header">
-            <button class="new-chat-btn" onclick="newChat()" title="Cuộc trò chuyện mới">＋ <span class="new-chat-label">New chat</span></button>
-            <button class="icon-btn" id="collapseSidebar" onclick="toggleSidebarCollapse()" title="Thu gọn">‹</button>
-        </div>
-        <div class="history-content">
-            <div id="conversationList"><div class="history-empty">Đang tải lịch sử…</div></div>
-            <button class="load-more" id="loadMoreConversations" onclick="loadMoreConversations()" hidden>Tải thêm</button>
-        </div>
+<section class="auth-screen" id="authScreen">
+    <form class="auth-card form" id="loginForm">
+        <h1>Agent Tool Runtime</h1><div class="muted">Đăng nhập để tiếp tục</div>
+        <input id="loginUsername" autocomplete="username" placeholder="Tên đăng nhập" required>
+        <input id="loginPassword" type="password" autocomplete="current-password" placeholder="Mật khẩu" required>
+        <div class="error" id="loginError"></div><button class="btn primary" type="submit">Đăng nhập</button>
+    </form>
+</section>
+
+<div class="app hidden" id="application">
+    <aside class="sidebar" id="sidebar">
+        <div class="brand">Agent Tool Runtime</div>
+        <button class="btn primary" style="width:100%" onclick="newChat()">＋ Cuộc trò chuyện mới</button>
+        <div id="conversationList" style="margin-top:12px"></div>
+        <button class="btn hidden" id="loadMore" onclick="loadConversations(false)">Tải thêm</button>
     </aside>
-    <div class="sidebar-backdrop" id="sidebarBackdrop" onclick="closeMobileSidebar()"></div>
-    <main class="main-shell">
+    <main class="main">
         <header class="header">
-            <div style="display:flex;align-items:center;gap:10px;min-width:0">
-                <button class="icon-btn mobile-history-btn" onclick="openMobileSidebar()" title="Lịch sử">☰</button>
-                <div class="header-title"><h1 id="chatTitle">AI Agent - Assignment 1</h1><div class="subtitle">Google Drive | Code Sandbox | RAG Memory | Tool Registry 6-step</div></div>
-            </div>
-            <div class="header-actions">
-                <button class="btn" onclick="toggleMemory()"><span class="btn-label">Memory</span><span class="count" id="memoryCount">0</span></button>
-                <button class="btn" onclick="toggleDocuments()"><span class="btn-label">Documents</span><span class="count" id="documentCount">0</span></button>
-                <button class="btn" onclick="toggleAudit()"><span class="btn-label">Audit Log</span> ⚙</button>
+            <div class="row"><button class="btn mobile-menu" onclick="toggleSidebar()">☰</button><div><div class="title" id="chatTitle">AI Agent</div><div class="subtitle optional">Drive · RAG Memory · RBAC</div></div></div>
+            <div class="row">
+                <button class="btn" onclick="openDataPanel('memory')">Memory</button>
+                <button class="btn optional" onclick="openDataPanel('documents')">Documents</button>
+                <button class="btn optional" onclick="openDataPanel('audit')">Audit</button>
+                <button class="btn hidden" id="adminButton" onclick="openAdmin()">Admin</button>
+                <button class="btn" id="profileButton" onclick="openProfile()"></button>
+                <button class="btn danger" onclick="logout()">Thoát</button>
             </div>
         </header>
-        <div class="chat-container" id="chatContainer"></div>
-        <div class="input-area">
-            <textarea id="input" placeholder="Nhập tin nhắn…" rows="1" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMessage()}" oninput="autoResize(this)"></textarea>
-            <button class="send-btn" id="sendBtn" onclick="sendMessage()">Send</button>
-        </div>
+        <div class="chat" id="chat"></div>
+        <div class="inputbar"><textarea id="messageInput" rows="1" placeholder="Nhập tin nhắn…"></textarea><button class="btn primary" id="sendButton" onclick="sendMessage()">Gửi</button></div>
     </main>
 </div>
-<div class="side-panel" id="auditPanel"><div class="panel-header"><h2>Audit Log</h2><button class="btn" onclick="toggleAudit()">Close</button></div><div class="panel-body" id="auditBody">Loading…</div></div>
-<div class="side-panel" id="memoryPanel"><div class="panel-header"><h2>User facts</h2><div><button class="btn" onclick="loadMemoryFacts()">Refresh</button> <button class="btn" onclick="toggleMemory()">Close</button></div></div><div class="panel-body" id="memoryBody">Loading…</div></div>
-<div class="side-panel" id="documentPanel"><div class="panel-header"><h2>Saved documents</h2><div><button class="btn" onclick="loadMemoryDocuments()">Refresh</button> <button class="btn" onclick="toggleDocuments()">Close</button></div></div><div class="panel-body" id="documentBody">Loading…</div></div>
+
+<section class="panel hidden" id="dataPanel"><div class="panel-head"><h2 id="dataTitle"></h2><button class="btn" onclick="closePanel('dataPanel')">Đóng</button></div><div id="dataBody"></div></section>
+<section class="panel hidden" id="adminPanel"><div class="panel-head"><h2>Quản trị tài khoản</h2><button class="btn" onclick="closePanel('adminPanel')">Đóng</button></div>
+    <form class="form card" id="createUserForm"><input id="newUsername" placeholder="Username" required><input id="newDisplayName" placeholder="Tên hiển thị"><select id="newRole"><option value="user">user</option><option value="guest">guest</option><option value="admin">admin</option></select><button class="btn primary">Tạo tài khoản</button><div class="success" id="temporaryPassword"></div></form>
+    <div id="userList"></div>
+</section>
+<section class="panel hidden" id="profilePanel"><div class="panel-head"><h2>Tài khoản</h2><button class="btn" onclick="closePanel('profilePanel')">Đóng</button></div><div id="profileInfo" class="card"></div><form class="form card" id="changePasswordForm"><h3>Đổi mật khẩu</h3><input id="currentPassword" type="password" placeholder="Mật khẩu hiện tại" required><input id="newPassword" type="password" minlength="12" maxlength="128" placeholder="Mật khẩu mới (ít nhất 12 ký tự)" required><button class="btn primary">Đổi mật khẩu</button><div class="error" id="passwordError"></div></form></section>
+<section class="modal hidden" id="forcedChange"><form class="modal-card form" id="forcedChangeForm"><h2>Đổi mật khẩu tạm</h2><div class="muted">Bạn phải đặt mật khẩu mới trước khi sử dụng ứng dụng.</div><input id="forcedPassword" type="password" minlength="12" maxlength="128" placeholder="Mật khẩu mới" required><input id="forcedConfirmation" type="password" placeholder="Nhập lại mật khẩu" required><div class="error" id="forcedError"></div><button class="btn primary">Hoàn tất</button></form></section>
 
 <script>
-const API = '';
-const SESSION_STORAGE_KEY = 'assignment-1-active-conversation-id';
-const SIDEBAR_STORAGE_KEY = 'assignment-1-history-collapsed';
-let activeConversationId = localStorage.getItem(SESSION_STORAGE_KEY);
-let conversations = [], conversationCursor = null, nextMessagesBefore = null, loadedMessages = [], historyController = null;
-const historySidebar = document.getElementById('historySidebar');
-if (localStorage.getItem(SIDEBAR_STORAGE_KEY) === 'true') historySidebar.classList.add('collapsed');
-
-function autoResize(el) { el.style.height='auto'; el.style.height=Math.min(el.scrollHeight,120)+'px'; }
-function showWelcome() { document.getElementById('chatContainer').innerHTML='<div class="welcome" id="welcome"><h2>Bắt đầu cuộc trò chuyện</h2><p>Hỏi về Google Drive hoặc lưu facts và documents vào RAG Memory.</p><div class="caps"><div class="cap">Google Drive</div><div class="cap">Code Sandbox</div><div class="cap">RAG Memory</div></div></div>'; }
-function createMessageElement(text,role,toolsUsed=[],safeHtml='') {
-    const div=document.createElement('div'); div.className='message '+role;
-    if(role==='assistant'&&safeHtml) {
-        div.innerHTML = safeHtml;
-    } else {
-        div.textContent = text;
-    }
-    if(toolsUsed.length){const badge=document.createElement('div');badge.className='tools-badge';toolsUsed.forEach(tool=>{const tag=document.createElement('span');tag.className='tool-tag';tag.textContent=tool;badge.appendChild(tag)});div.appendChild(badge)}
-    return div;
-}
-function addMessage(text,role,toolsUsed=[],safeHtml=''){document.getElementById('welcome')?.remove();const container=document.getElementById('chatContainer');container.appendChild(createMessageElement(text,role,toolsUsed,safeHtml));container.scrollTop=container.scrollHeight}
-function setTyping(active){document.getElementById('typingIndicator')?.remove();if(!active)return;const el=document.createElement('div');el.id='typingIndicator';el.className='typing active';el.innerHTML='<span></span><span></span><span></span>';const container=document.getElementById('chatContainer');container.appendChild(el);container.scrollTop=container.scrollHeight}
-function conversationGroup(value){const date=new Date(value),today=new Date();today.setHours(0,0,0,0);date.setHours(0,0,0,0);const days=Math.floor((today-date)/86400000);return days<=0?'Hôm nay':days<=7?'7 ngày qua':'Cũ hơn'}
-function renderConversations(){
-    const root=document.getElementById('conversationList');root.replaceChildren();
-    if(!conversations.length){const empty=document.createElement('div');empty.className='history-empty';empty.textContent='Chưa có cuộc trò chuyện nào.';root.appendChild(empty);return}
-    const groups=new Map();conversations.forEach(item=>{const label=conversationGroup(item.updated_at);if(!groups.has(label))groups.set(label,[]);groups.get(label).push(item)});
-    ['Hôm nay','7 ngày qua','Cũ hơn'].forEach(label=>{const items=groups.get(label);if(!items?.length)return;const section=document.createElement('section');section.className='history-group';const heading=document.createElement('div');heading.className='history-group-title';heading.textContent=label;section.appendChild(heading);items.forEach(item=>{const button=document.createElement('button');button.className='conversation-item'+(item.id===activeConversationId?' active':'');button.textContent=item.title;button.title=item.title;button.onclick=()=>selectConversation(item.id);section.appendChild(button)});root.appendChild(section)})
-}
-async function loadConversations(reset=true){
-    const url=new URL(API+'/api/conversations',window.location.origin);url.searchParams.set('limit','30');if(!reset&&conversationCursor)url.searchParams.set('cursor',conversationCursor);
-    try{const response=await fetch(url);if(!response.ok)throw new Error('HTTP '+response.status);const data=await response.json();conversations=reset?data.conversations:conversations.concat(data.conversations);conversationCursor=data.next_cursor;document.getElementById('loadMoreConversations').hidden=!conversationCursor;renderConversations()}
-    catch(error){const root=document.getElementById('conversationList');root.replaceChildren();const message=document.createElement('div');message.className='history-error';message.textContent='Không thể tải lịch sử: '+error.message;root.appendChild(message)}
-}
-async function loadMoreConversations(){if(conversationCursor)await loadConversations(false)}
-function renderLoadedMessages(){const container=document.getElementById('chatContainer');container.replaceChildren();if(nextMessagesBefore!==null){const older=document.createElement('button');older.className='older-btn';older.textContent='Tải tin nhắn cũ hơn';older.onclick=loadOlderMessages;container.appendChild(older)}loadedMessages.forEach(message=>container.appendChild(createMessageElement(message.content,message.role,message.tools_used||[],message.response_html||'')));if(!loadedMessages.length)showWelcome()}
-async function fetchMessages(conversationId,before=null,signal=undefined){const url=new URL(API+`/api/conversations/${encodeURIComponent(conversationId)}/messages`,window.location.origin);url.searchParams.set('limit','50');if(before!==null)url.searchParams.set('before',before);const response=await fetch(url,{signal});if(!response.ok)throw new Error('HTTP '+response.status);return response.json()}
-async function selectConversation(conversationId){
-    if(!conversationId)return;historyController?.abort();historyController=new AbortController();const selectedId=conversationId;activeConversationId=selectedId;localStorage.setItem(SESSION_STORAGE_KEY,selectedId);renderConversations();const summary=conversations.find(item=>item.id===selectedId);document.getElementById('chatTitle').textContent=summary?.title||'Conversation';document.getElementById('chatContainer').innerHTML='<div class="history-empty">Đang tải tin nhắn…</div>';
-    try{const data=await fetchMessages(selectedId,null,historyController.signal);if(activeConversationId!==selectedId)return;loadedMessages=data.messages;nextMessagesBefore=data.next_before;renderLoadedMessages();const container=document.getElementById('chatContainer');container.scrollTop=container.scrollHeight;closeMobileSidebar()}
-    catch(error){if(error.name==='AbortError')return;if(activeConversationId===selectedId)document.getElementById('chatContainer').innerHTML='<div class="history-error">Không thể tải cuộc trò chuyện.</div>'}
-}
-async function loadOlderMessages(){if(!activeConversationId||nextMessagesBefore===null)return;const container=document.getElementById('chatContainer'),oldHeight=container.scrollHeight;const data=await fetchMessages(activeConversationId,nextMessagesBefore);loadedMessages=data.messages.concat(loadedMessages);nextMessagesBefore=data.next_before;renderLoadedMessages();container.scrollTop=container.scrollHeight-oldHeight}
-function newChat(){historyController?.abort();activeConversationId=null;localStorage.removeItem(SESSION_STORAGE_KEY);loadedMessages=[];nextMessagesBefore=null;document.getElementById('chatTitle').textContent='AI Agent - Assignment 1';renderConversations();showWelcome();closeMobileSidebar();document.getElementById('input').focus()}
-async function sendMessage(){
-    const input=document.getElementById('input'),button=document.getElementById('sendBtn'),message=input.value.trim();if(!message||button.disabled)return;const sendingConversationId=activeConversationId;const clientMessageId=globalThis.crypto?.randomUUID?.()||`${Date.now()}-${Math.random()}`;addMessage(message,'user');input.value='';input.style.height='auto';button.disabled=true;setTyping(true);
-    try{const response=await fetch(API+'/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:sendingConversationId,client_message_id:clientMessageId,message})});const data=await response.json();if(!response.ok)throw new Error(data.detail||data.response||`HTTP ${response.status}`);activeConversationId=data.conversation_id;localStorage.setItem(SESSION_STORAGE_KEY,activeConversationId);document.getElementById('chatTitle').textContent=data.title||'Conversation';addMessage(data.response,'assistant',data.tools_used||[],data.response_html||'');await loadConversations(true);if(data.tools_used?.includes('upsert_user_memory'))await loadMemoryFacts();if(data.tools_used?.includes('save_current_document'))await loadMemoryDocuments()}
-    catch(error){addMessage('Error: '+error.message,'assistant')}finally{setTyping(false);button.disabled=false;input.focus()}
-}
-function toggleSidebarCollapse(){historySidebar.classList.toggle('collapsed');localStorage.setItem(SIDEBAR_STORAGE_KEY,historySidebar.classList.contains('collapsed'));document.getElementById('collapseSidebar').textContent=historySidebar.classList.contains('collapsed')?'›':'‹'}
-function openMobileSidebar(){historySidebar.classList.add('mobile-open');document.getElementById('sidebarBackdrop').classList.add('open')}function closeMobileSidebar(){historySidebar.classList.remove('mobile-open');document.getElementById('sidebarBackdrop').classList.remove('open')}
-function closeRightPanels(exceptId=''){['auditPanel','memoryPanel','documentPanel'].forEach(id=>{if(id!==exceptId)document.getElementById(id).classList.remove('open')})}
-function sessionQuery(){return encodeURIComponent(activeConversationId||'default')}function formatTime(value){const date=new Date(value);return Number.isNaN(date.getTime())?value:date.toLocaleString('vi-VN')}
-async function toggleAudit(){const panel=document.getElementById('auditPanel');closeRightPanels('auditPanel');panel.classList.toggle('open');if(!panel.classList.contains('open'))return;const body=document.getElementById('auditBody');body.textContent='Loading…';try{const response=await fetch(API+'/api/audit?session_id='+sessionQuery());const data=await response.json();body.replaceChildren();if(!data.audit_log.length){body.innerHTML='<div class="panel-empty">No audit logs yet.</div>';return}data.audit_log.forEach(item=>{const entry=document.createElement('div');entry.className='panel-entry';const title=document.createElement('div');title.textContent=`${item.tool} [${item.status}]`;title.className=item.status==='success'?'status-ok':'status-fail';const meta=document.createElement('div');meta.className='entry-meta';meta.textContent=`${item.user_id} · ${formatTime(item.timestamp||'')}`;entry.append(title,meta);(item.steps||[]).forEach(step=>{const row=document.createElement('div');row.className='entry-meta';const symbol=step.status==='success'?'✓':step.status==='error'?'✕':'–';row.textContent=`${symbol} ${step.step}. ${step.label||step.name} [${step.status}]`;if(step.status==='error')row.classList.add('status-fail');entry.appendChild(row)});body.appendChild(entry)})}catch(error){body.textContent='Không thể tải audit log.'}}
-function renderMemoryFacts(facts){const body=document.getElementById('memoryBody');body.replaceChildren();if(!facts.length){body.innerHTML='<div class="panel-empty">Chưa có fact hoặc sở thích nào được lưu.</div>';return}facts.forEach(fact=>{const entry=document.createElement('div');entry.className='panel-entry';const tag=document.createElement('div');tag.className='entry-tag';tag.textContent=[fact.category==='user_preference'?'Preference':'Fact',fact.topic,fact.polarity].filter(Boolean).join(' · ');const content=document.createElement('div');content.className='entry-text';content.textContent = fact.text;entry.append(tag,content);if(fact.created_at){const meta=document.createElement('div');meta.className='entry-meta';meta.textContent=formatTime(fact.created_at);entry.appendChild(meta)}body.appendChild(entry)})}
-async function loadMemoryFacts(){try{const response=await fetch(API+'/api/memories?session_id='+sessionQuery());if(!response.ok)throw new Error('HTTP '+response.status);const data=await response.json();document.getElementById('memoryCount').textContent=data.total;renderMemoryFacts(data.facts)}catch(error){document.getElementById('memoryBody').textContent='Không thể tải memory facts: '+error.message}}
-async function toggleMemory(){const panel=document.getElementById('memoryPanel');closeRightPanels('memoryPanel');panel.classList.toggle('open');if(panel.classList.contains('open'))await loadMemoryFacts()}
-function renderMemoryDocuments(documents){const body=document.getElementById('documentBody');body.replaceChildren();if(!documents.length){body.innerHTML='<div class="panel-empty">Chưa có document nào được lưu.</div>';return}documents.forEach(documentMemory=>{const entry=document.createElement('div');entry.className='panel-entry';const tag=document.createElement('div');tag.className='entry-tag';tag.textContent=`${documentMemory.category} · ${documentMemory.stored_chunks}/${documentMemory.chunk_count} chunks`;const title=document.createElement('div');title.className='entry-text';title.textContent = documentMemory.file_name || 'Saved document';const preview=document.createElement('div');preview.className='entry-meta';preview.textContent=documentMemory.preview;entry.append(tag,title,preview);if(documentMemory.created_at){const meta=document.createElement('div');meta.className='entry-meta';meta.textContent=formatTime(documentMemory.created_at);entry.appendChild(meta)}body.appendChild(entry)})}
-async function loadMemoryDocuments(){try{const response=await fetch(API+'/api/documents?session_id='+sessionQuery());if(!response.ok)throw new Error('HTTP '+response.status);const data=await response.json();document.getElementById('documentCount').textContent=data.total;renderMemoryDocuments(data.documents)}catch(error){document.getElementById('documentBody').textContent='Không thể tải documents: '+error.message}}
-async function toggleDocuments(){const panel=document.getElementById('documentPanel');closeRightPanels('documentPanel');panel.classList.toggle('open');if(panel.classList.contains('open'))await loadMemoryDocuments()}
-async function initialize(){showWelcome();await Promise.all([loadConversations(true),loadMemoryFacts(),loadMemoryDocuments()]);if(activeConversationId&&conversations.some(item=>item.id===activeConversationId))await selectConversation(activeConversationId);else if(conversations.length)await selectConversation(conversations[0].id);else newChat()}
-initialize();
+const API='';const ACTIVE_KEY='assignment-1-active-conversation-id';let accessToken=null,currentUser=null,refreshPromise=null,changeToken=null,activeConversationId=localStorage.getItem(ACTIVE_KEY),conversations=[],conversationCursor=null,loadedMessages=[],nextBefore=null;
+const el=id=>document.getElementById(id);const hasPermission=value=>currentUser?.permissions?.includes(value);
+async function rawJson(url,options={}){const response=await fetch(API+url,options);let data={};try{data=await response.json()}catch{}if(!response.ok)throw Object.assign(new Error(data.detail||`HTTP ${response.status}`),{status:response.status});return data}
+async function refreshAccess(){if(!refreshPromise)refreshPromise=rawJson('/api/auth/refresh',{method:'POST',credentials:'same-origin'}).then(data=>{applySession(data);return true}).catch(()=>false).finally(()=>refreshPromise=null);return refreshPromise}
+async function apiFetch(url,options={},retry=true){const headers=new Headers(options.headers||{});if(accessToken)headers.set('Authorization','Bearer '+accessToken);if(options.body&&!headers.has('Content-Type'))headers.set('Content-Type','application/json');try{return await rawJson(url,{...options,headers,credentials:'same-origin'})}catch(error){if(error.status===401&&retry&&await refreshAccess())return apiFetch(url,options,false);if(error.status===401)showLogin();throw error}}
+function applySession(data){accessToken=data.access_token;currentUser=data.user;el('profileButton').textContent=currentUser.display_name||currentUser.username;el('adminButton').classList.toggle('hidden',!hasPermission('users:manage'));el('profileInfo').textContent=`${currentUser.username} · ${currentUser.role}`}
+function showLogin(){accessToken=null;currentUser=null;el('application').classList.add('hidden');el('authScreen').classList.remove('hidden')}
+async function startApp(){el('authScreen').classList.add('hidden');el('application').classList.remove('hidden');showWelcome();await Promise.all([loadConversations(),loadMemory()]);if(activeConversationId&&conversations.some(x=>x.id===activeConversationId))await selectConversation(activeConversationId);else if(conversations.length)await selectConversation(conversations[0].id);else newChat()}
+el('loginForm').onsubmit=async event=>{event.preventDefault();el('loginError').textContent='';try{const data=await rawJson('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({username:el('loginUsername').value,password:el('loginPassword').value})});if(data.password_change_required){changeToken=data.change_token;el('forcedChange').classList.remove('hidden');return}applySession(data);await startApp()}catch(error){el('loginError').textContent=error.message}}
+el('forcedChangeForm').onsubmit=async event=>{event.preventDefault();const password=el('forcedPassword').value;if(password!==el('forcedConfirmation').value){el('forcedError').textContent='Mật khẩu nhập lại không khớp';return}try{const data=await rawJson('/api/auth/complete-password-change',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({change_token:changeToken,new_password:password})});changeToken=null;el('forcedChange').classList.add('hidden');applySession(data);await startApp()}catch(error){el('forcedError').textContent=error.message}}
+async function logout(){try{await rawJson('/api/auth/logout',{method:'POST',credentials:'same-origin'})}finally{localStorage.removeItem(ACTIVE_KEY);showLogin()}}
+function closePanel(id){el(id).classList.add('hidden')}function showWelcome(){el('chat').innerHTML='<div class="welcome" id="welcome"><h2>Bắt đầu cuộc trò chuyện</h2><p>Hỏi về Drive hoặc sử dụng RAG memory của riêng bạn.</p></div>'}
+function messageNode(text,role,tools=[],safeHtml=''){const node=document.createElement('div');node.className='message '+role;if(role==='assistant'&&safeHtml)node.innerHTML = safeHtml;else node.textContent = text;if(tools.length){const badge=document.createElement('div');badge.className='tools';badge.textContent='Tools: '+tools.join(', ');node.appendChild(badge)}return node}
+function addMessage(...args){el('welcome')?.remove();el('chat').appendChild(messageNode(...args));el('chat').scrollTop=el('chat').scrollHeight}
+function renderConversations(){el('conversationList').replaceChildren();for(const item of conversations){const button=document.createElement('button');button.className='conversation'+(item.id===activeConversationId?' active':'');button.textContent=item.title;button.onclick=()=>selectConversation(item.id);el('conversationList').appendChild(button)}el('loadMore').classList.toggle('hidden',!conversationCursor)}
+async function loadConversations(reset=true){const url=new URL(API+'/api/conversations',location.origin);url.searchParams.set('limit','30');if(!reset&&conversationCursor)url.searchParams.set('cursor',conversationCursor);const data=await apiFetch(url.pathname+url.search);conversations=reset?data.conversations:conversations.concat(data.conversations);conversationCursor=data.next_cursor;renderConversations()}
+function renderMessages(){el('chat').replaceChildren();if(nextBefore!==null){const older=document.createElement('button');older.className='btn';older.textContent='Tải tin nhắn cũ hơn';older.onclick=loadOlderMessages;el('chat').appendChild(older)}for(const message of loadedMessages)el('chat').appendChild(messageNode(message.content,message.role,message.tools_used||[],message.response_html||''));if(!loadedMessages.length)showWelcome()}
+async function selectConversation(id){activeConversationId=id;localStorage.setItem(ACTIVE_KEY,id);renderConversations();const summary=conversations.find(x=>x.id===id);el('chatTitle').textContent=summary?.title||'Conversation';const data=await apiFetch(`/api/conversations/${encodeURIComponent(id)}/messages?limit=50`);loadedMessages=data.messages;nextBefore=data.next_before;renderMessages();el('chat').scrollTop=el('chat').scrollHeight;el('sidebar').classList.remove('open')}
+async function loadOlderMessages(){if(!activeConversationId||nextBefore===null)return;const oldHeight=el('chat').scrollHeight;const data=await apiFetch(`/api/conversations/${encodeURIComponent(activeConversationId)}/messages?limit=50&before=${nextBefore}`);loadedMessages=data.messages.concat(loadedMessages);nextBefore=data.next_before;renderMessages();el('chat').scrollTop=el('chat').scrollHeight-oldHeight}
+function toggleSidebar(){el('sidebar').classList.toggle('open')}
+function newChat(){activeConversationId=null;localStorage.removeItem(ACTIVE_KEY);loadedMessages=[];nextBefore=null;el('chatTitle').textContent='AI Agent';renderConversations();showWelcome();el('messageInput').focus()}
+async function sendMessage(){const input=el('messageInput'),button=el('sendButton'),message=input.value.trim();if(!message||button.disabled)return;addMessage(message,'user');input.value='';button.disabled=true;try{const data=await apiFetch('/api/chat',{method:'POST',body:JSON.stringify({conversation_id:activeConversationId,client_message_id:crypto.randomUUID(),message})});activeConversationId=data.conversation_id;localStorage.setItem(ACTIVE_KEY,activeConversationId);el('chatTitle').textContent=data.title;addMessage(data.response,'assistant',data.tools_used||[],data.response_html||'');await loadConversations()}catch(error){addMessage('Error: '+error.message,'assistant')}finally{button.disabled=false;input.focus()}}
+el('messageInput').onkeydown=event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMessage()}}
+async function openDataPanel(type){el('dataPanel').classList.remove('hidden');el('dataTitle').textContent={memory:'Memory',documents:'Documents',audit:'Audit log'}[type];el('dataBody').textContent='Đang tải…';try{let url=type==='memory'?'/api/memories':type==='documents'?'/api/documents':'/api/audit?session_id='+(activeConversationId||'default');const data=await apiFetch(url);const values=type==='memory'?data.facts:type==='documents'?data.documents:data.audit_log;el('dataBody').replaceChildren();for(const item of values){const card=document.createElement('div');card.className='card';const title=document.createElement('div');title.className='card-title';title.textContent=type==='memory'?item.text:type==='documents'?(item.file_name||'Saved document'):`${item.tool} [${item.status}]`;const meta=document.createElement('div');meta.className='tag';meta.textContent=type==='memory'?`${item.category} · ${item.topic||''}`:type==='documents'?`${item.category} · ${item.stored_chunks}/${item.chunk_count} chunks`:(item.timestamp||'');card.append(title,meta);el('dataBody').appendChild(card)}if(!values.length)el('dataBody').textContent='Chưa có dữ liệu.'}catch(error){el('dataBody').textContent=error.message}}
+async function loadMemory(ignore=true){if(!hasPermission('memory:read'))return;try{await apiFetch('/api/memories')}catch(error){if(!ignore)throw error}}
+function openProfile(){el('profilePanel').classList.remove('hidden')}
+el('changePasswordForm').onsubmit=async event=>{event.preventDefault();try{const data=await apiFetch('/api/auth/change-password',{method:'POST',body:JSON.stringify({current_password:el('currentPassword').value,new_password:el('newPassword').value})});applySession(data);el('currentPassword').value='';el('newPassword').value='';el('passwordError').textContent='Đổi mật khẩu thành công'}catch(error){el('passwordError').textContent=error.message}}
+async function openAdmin(){el('adminPanel').classList.remove('hidden');await loadUsers()}
+async function loadUsers(){const data=await apiFetch('/api/admin/users?limit=100');const root=el('userList');root.replaceChildren();for(const user of data.users){const card=document.createElement('div');card.className='card user-card';const top=document.createElement('div');top.className='row';const name=document.createElement('div');name.className='grow card-title';name.textContent=`${user.display_name||user.username} (${user.username})`;const role=document.createElement('select');for(const value of ['admin','user','guest']){const option=document.createElement('option');option.value=value;option.textContent=value;option.selected=value===user.role;role.appendChild(option)}const toggle=document.createElement('button');toggle.className='btn';toggle.textContent=user.is_active?'Khóa':'Mở khóa';toggle.onclick=()=>updateUser(user.user_id,{is_active:!user.is_active});const save=document.createElement('button');save.className='btn';save.textContent='Lưu role';save.onclick=()=>updateUser(user.user_id,{role:role.value});const reset=document.createElement('button');reset.className='btn danger';reset.textContent='Reset mật khẩu';reset.disabled=user.user_id===currentUser.user_id;reset.onclick=()=>resetPassword(user.user_id);top.append(name,role,save,toggle,reset);card.appendChild(top);root.appendChild(card)}}
+async function updateUser(id,changes){try{await apiFetch('/api/admin/users/'+encodeURIComponent(id),{method:'PATCH',body:JSON.stringify(changes)});await loadUsers()}catch(error){alert(error.message)}}
+async function resetPassword(id){if(!confirm('Reset mật khẩu tài khoản này?'))return;try{const data=await apiFetch(`/api/admin/users/${encodeURIComponent(id)}/reset-password`,{method:'POST'});alert('Mật khẩu tạm (chỉ hiển thị lần này):\n'+data.temporary_password);await loadUsers()}catch(error){alert(error.message)}}
+el('createUserForm').onsubmit=async event=>{event.preventDefault();try{const data=await apiFetch('/api/admin/users',{method:'POST',body:JSON.stringify({username:el('newUsername').value,display_name:el('newDisplayName').value,role:el('newRole').value})});el('temporaryPassword').textContent='Mật khẩu tạm (chỉ hiển thị lần này):\n'+data.temporary_password;el('newUsername').value='';el('newDisplayName').value='';await loadUsers()}catch(error){el('temporaryPassword').textContent=error.message}}
+(async()=>{if(await refreshAccess())await startApp();else showLogin()})();
 </script>
 </body>
 </html>

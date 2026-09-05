@@ -1,55 +1,113 @@
-"""Expose the agent through a FastAPI service and a simple web UI."""
+"""Expose the authenticated agent API and bundled web UI."""
 
-import json
+from __future__ import annotations
+
 import threading
 import traceback
 import uuid
+
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from agent import Agent
-from config import SERVICE_API_KEY
-from registry.registry import check_authentication
-from services.chat_renderer import render_chat_markdown
-from services.audit_logs import audit_log_repository
-from services.conversations import (
-    ConversationNotFoundError,
-    conversation_repository,
+from config import AUTH_COOKIE_SECURE, CORS_ORIGINS, JWT_REFRESH_DAYS
+from services.auth import (
+    AuthenticationError,
+    AuthConfigurationError,
+    DuplicateUsernameError,
+    LastAdminError,
+    ROLE_PERMISSIONS,
+    auth_repository,
+    auth_service,
+    generate_temporary_password,
+    login_rate_limiter,
+    normalize_username,
 )
+from services.audit_logs import audit_log_repository
+from services.chat_renderer import render_chat_markdown
+from services.conversations import ConversationNotFoundError, conversation_repository
 from services.vectorstore import list_all_memories
 
-app = FastAPI(title="AI Agent - Assignment 1")
 
+app = FastAPI(title="AI Agent - Assignment 1")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
-# Agent instances are an optimization. PostgreSQL remains the source of truth.
+REFRESH_COOKIE = "agent_refresh"
 sessions: dict[str, Agent] = {}
 conversation_locks: dict[str, threading.Lock] = {}
 conversation_locks_guard = threading.Lock()
 
 
-def _audit_sink(context_id: str):
-    """Bind durable audit writes to one authenticated context."""
-    return lambda entry: audit_log_repository.append(context_id, entry)
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else ""
 
 
-def get_agent(session_id: str) -> Agent:
-    """Return a legacy in-memory session for backward-compatible clients."""
-    key = f"legacy:{session_id}"
-    if key not in sessions:
-        sessions[key] = Agent(
-            service_api_key=SERVICE_API_KEY,
-            audit_sink=_audit_sink(key),
+def _set_refresh_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        REFRESH_COOKIE,
+        token,
+        max_age=JWT_REFRESH_DAYS * 86400,
+        httponly=True,
+        secure=AUTH_COOKIE_SECURE,
+        samesite="strict",
+        path="/api/auth",
+    )
+
+
+def _clear_refresh_cookie(response: Response) -> None:
+    response.delete_cookie(REFRESH_COOKIE, path="/api/auth", samesite="strict")
+
+
+def _bearer_token(request: Request) -> str:
+    header = request.headers.get("Authorization", "")
+    scheme, _, token = header.partition(" ")
+    if scheme.casefold() != "bearer" or not token:
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required",
+            headers={"WWW-Authenticate": "Bearer"},
         )
-    return sessions[key]
+    return token
+
+
+def current_principal(request: Request) -> dict:
+    try:
+        return auth_service.principal_from_access(_bearer_token(request))
+    except HTTPException:
+        raise
+    except AuthConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except AuthenticationError as exc:
+        raise HTTPException(
+            status_code=401,
+            detail=str(exc),
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+
+
+def require_permissions(*required: str):
+    def dependency(user: dict = Depends(current_principal)) -> dict:
+        missing = sorted(set(required) - set(user.get("permissions", [])))
+        if missing:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Missing required permissions: {', '.join(missing)}",
+            )
+        return user
+    return dependency
+
+
+def _audit_sink(context_id: str):
+    return lambda entry: audit_log_repository.append(context_id, entry)
 
 
 def _conversation_lock(key: str) -> threading.Lock:
@@ -57,54 +115,73 @@ def _conversation_lock(key: str) -> threading.Lock:
         return conversation_locks.setdefault(key, threading.Lock())
 
 
-def _current_user() -> dict:
-    return check_authentication(SERVICE_API_KEY)
+def _agent_key(user_id: str, conversation_id: str) -> str:
+    return f"{user_id}:conversation:{conversation_id}"
 
 
 def _get_conversation_agent(
     conversation_id: str,
-    user_id: str,
+    user: dict,
     *,
     before_ordinal: int | None = None,
     force_reload: bool = False,
 ) -> Agent:
-    key = f"conversation:{conversation_id}"
+    key = _agent_key(user["user_id"], conversation_id)
     if force_reload:
         sessions.pop(key, None)
     if key not in sessions:
         stored = conversation_repository.list_context_messages(
-            conversation_id,
-            user_id,
-            before_ordinal=before_ordinal,
+            conversation_id, user["user_id"], before_ordinal=before_ordinal
         )
         history = [
             {"role": item["role"], "content": item["content"]}
-            for item in stored
-            if item["role"] in {"user", "assistant"}
+            for item in stored if item["role"] in {"user", "assistant"}
         ]
         artifact = conversation_repository.get_last_artifact(
-            conversation_id, user_id
+            conversation_id, user["user_id"]
         )
         sessions[key] = Agent(
-            service_api_key=SERVICE_API_KEY,
+            principal=user,
             conversation_history=history,
             last_artifact=artifact,
-            audit_sink=_audit_sink(key),
+            audit_sink=_audit_sink(f"conversation:{conversation_id}"),
         )
     return sessions[key]
 
 
-# Request and response models
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class CompletePasswordChangeRequest(BaseModel):
+    change_token: str
+    new_password: str
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+class AdminCreateUserRequest(BaseModel):
+    username: str
+    display_name: str = ""
+    role: str = "user"
+
+
+class AdminUpdateUserRequest(BaseModel):
+    role: str | None = None
+    is_active: bool | None = None
+
 
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=100_000)
     conversation_id: str | None = None
     client_message_id: str | None = None
-    session_id: str | None = None
 
 
 class ClearRequest(BaseModel):
-    session_id: str | None = None
     conversation_id: str | None = None
 
 
@@ -179,85 +256,255 @@ class MemoryDocumentsResponse(BaseModel):
     documents: list[MemoryDocument]
 
 
-# API endpoints
+def _public_user(user: dict) -> dict:
+    return {
+        key: user[key]
+        for key in (
+            "user_id", "username", "display_name", "role", "is_active",
+            "must_change_password", "permissions", "created_at", "updated_at",
+        )
+        if key in user
+    }
 
-@app.post("/api/chat")
-def chat(req: ChatRequest):
-    """Process one message and report tools used during the turn."""
-    # Compatibility for the original client and external assignment tests.
-    if req.session_id and not req.conversation_id and not req.client_message_id:
+
+def _session_response(issued) -> dict:
+    return {
+        "access_token": issued.access_token,
+        "token_type": "bearer",
+        "expires_in": issued.expires_in,
+        "password_change_required": False,
+        "user": _public_user(issued.user),
+    }
+
+
+@app.post("/api/auth/login")
+def login(body: LoginRequest, request: Request, response: Response):
+    ip = _client_ip(request)
+    try:
         try:
-            agent = get_agent(req.session_id)
-            audit_before = len(agent.get_audit_log())
-            response = agent.run(req.message)
-            tools_used = [
-                log["tool"] for log in agent.get_audit_log()[audit_before:]
-            ]
-            return ChatResponse(
-                response=response,
-                response_html=render_chat_markdown(response),
-                tools_used=tools_used,
-            )
-        except Exception as exc:
-            traceback.print_exc()
-            return JSONResponse(
-                status_code=500,
-                content={
-                    "response": f"Error: {exc}",
-                    "response_html": "",
-                    "tools_used": [],
-                },
-            )
+            normalized = normalize_username(body.username)
+        except ValueError:
+            normalized = "invalid"
+        login_rate_limiter.check(f"{ip}:{normalized}")
+        user = auth_service.authenticate(body.username, body.password, ip_address=ip)
+        if user["must_change_password"]:
+            return {
+                "password_change_required": True,
+                "change_token": auth_service.issue_password_change_token(user),
+                "user": _public_user(user),
+            }
+        issued = auth_service.issue_session(
+            user, ip_address=ip, user_agent=request.headers.get("User-Agent", "")
+        )
+        _set_refresh_cookie(response, issued.refresh_token)
+        return _session_response(issued)
+    except AuthConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except AuthenticationError as exc:
+        status = 429 if "Too many" in str(exc) else 401
+        raise HTTPException(status_code=status, detail="Invalid username or password") from exc
 
-    user = _current_user()
+
+@app.post("/api/auth/complete-password-change")
+def complete_password_change(
+    body: CompletePasswordChangeRequest, request: Request, response: Response
+):
+    try:
+        user = auth_service.complete_password_change(body.change_token, body.new_password)
+        issued = auth_service.issue_session(
+            user, ip_address=_client_ip(request),
+            user_agent=request.headers.get("User-Agent", ""),
+        )
+        auth_repository.log_event(
+            "complete_password_change", "success", actor_user_id=user["user_id"],
+            target_user_id=user["user_id"], ip_address=_client_ip(request),
+        )
+        _set_refresh_cookie(response, issued.refresh_token)
+        return _session_response(issued)
+    except (AuthenticationError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except AuthConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/api/auth/refresh")
+def refresh(request: Request, response: Response):
+    token = request.cookies.get(REFRESH_COOKIE)
+    if not token:
+        raise HTTPException(status_code=401, detail="Refresh token required")
+    try:
+        issued = auth_service.refresh(
+            token, ip_address=_client_ip(request),
+            user_agent=request.headers.get("User-Agent", ""),
+        )
+        _set_refresh_cookie(response, issued.refresh_token)
+        return _session_response(issued)
+    except AuthConfigurationError as exc:
+        _clear_refresh_cookie(response)
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except AuthenticationError as exc:
+        _clear_refresh_cookie(response)
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+
+@app.post("/api/auth/logout")
+def logout(request: Request, response: Response):
+    auth_service.logout(
+        request.cookies.get(REFRESH_COOKIE), ip_address=_client_ip(request)
+    )
+    _clear_refresh_cookie(response)
+    return {"status": "logged_out"}
+
+
+@app.get("/api/auth/me")
+def me(user: dict = Depends(current_principal)):
+    return _public_user(user)
+
+
+@app.post("/api/auth/change-password")
+def change_password(
+    body: ChangePasswordRequest, request: Request, response: Response,
+    user: dict = Depends(current_principal),
+):
+    try:
+        updated = auth_repository.set_password(
+            user["user_id"], body.new_password, must_change=False,
+            expected_current=body.current_password,
+        )
+        issued = auth_service.issue_session(
+            updated, ip_address=_client_ip(request),
+            user_agent=request.headers.get("User-Agent", ""),
+        )
+        auth_repository.log_event(
+            "change_password", "success", actor_user_id=user["user_id"],
+            target_user_id=user["user_id"], ip_address=_client_ip(request),
+        )
+        _set_refresh_cookie(response, issued.refresh_token)
+        return _session_response(issued)
+    except (AuthenticationError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/admin/users")
+def list_users(
+    limit: int = Query(50, ge=1, le=100), cursor: int = Query(0, ge=0),
+    role: str | None = None, is_active: bool | None = None,
+    _user: dict = Depends(require_permissions("users:manage")),
+):
+    try:
+        users, total = auth_repository.list_users(
+            offset=cursor, limit=limit, role=role, is_active=is_active
+        )
+        next_cursor = cursor + len(users) if cursor + len(users) < total else None
+        return {"users": [_public_user(item) for item in users], "total": total, "next_cursor": next_cursor}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/admin/users", status_code=201)
+def create_user(
+    body: AdminCreateUserRequest, request: Request,
+    actor: dict = Depends(require_permissions("users:manage")),
+):
+    password = generate_temporary_password()
+    try:
+        user = auth_repository.create_user(
+            body.username, body.display_name, body.role, password
+        )
+        auth_repository.log_event(
+            "create_user", "success", actor_user_id=actor["user_id"],
+            target_user_id=user["user_id"], detail=f"role={body.role}",
+            ip_address=_client_ip(request),
+        )
+        return {"user": _public_user(user), "temporary_password": password}
+    except DuplicateUsernameError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.patch("/api/admin/users/{user_id}")
+def update_user(
+    user_id: str, body: AdminUpdateUserRequest, request: Request,
+    actor: dict = Depends(require_permissions("users:manage")),
+):
+    if body.role is None and body.is_active is None:
+        raise HTTPException(status_code=400, detail="No changes supplied")
+    try:
+        updated = auth_repository.update_user(
+            user_id, role=body.role, is_active=body.is_active
+        )
+        auth_repository.log_event(
+            "update_user", "success", actor_user_id=actor["user_id"],
+            target_user_id=user_id,
+            detail=f"role={body.role};is_active={body.is_active}",
+            ip_address=_client_ip(request),
+        )
+        sessions_to_remove = [key for key in sessions if key.startswith(f"{user_id}:")]
+        for key in sessions_to_remove:
+            sessions.pop(key, None)
+        return {"user": _public_user(updated)}
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except LastAdminError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/admin/users/{user_id}/reset-password")
+def reset_password(
+    user_id: str, request: Request,
+    actor: dict = Depends(require_permissions("users:manage")),
+):
+    if user_id == actor["user_id"]:
+        raise HTTPException(status_code=400, detail="Use the self-service password change endpoint")
+    password = generate_temporary_password()
+    try:
+        updated = auth_repository.set_password(user_id, password, must_change=True)
+        auth_repository.log_event(
+            "reset_password", "success", actor_user_id=actor["user_id"],
+            target_user_id=user_id, ip_address=_client_ip(request),
+        )
+        return {"user": _public_user(updated), "temporary_password": password}
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/chat", response_model=ChatResponse)
+def chat(
+    req: ChatRequest,
+    user: dict = Depends(require_permissions("chat:use", "conversation:write")),
+):
     client_message_id = req.client_message_id or str(uuid.uuid4())
-    lock_key = req.conversation_id or f"new:{client_message_id}"
+    lock_key = f"{user['user_id']}:{req.conversation_id or client_message_id}"
     lock = _conversation_lock(lock_key)
     if not lock.acquire(blocking=False):
-        raise HTTPException(
-            status_code=409,
-            detail="Another message is already running for this conversation",
-        )
+        raise HTTPException(status_code=409, detail="Another message is already running for this conversation")
     try:
         conversation = None
         user_message = None
         new_conversation = False
-
-        # A retry can arrive before the browser received the newly-created ID.
-        retried = conversation_repository.find_user_message(
-            user["user_id"], client_message_id
-        )
+        retried = conversation_repository.find_user_message(user["user_id"], client_message_id)
         if retried is not None:
             user_message, conversation = retried
         elif req.conversation_id:
-            conversation = conversation_repository.get_conversation(
-                req.conversation_id, user["user_id"]
-            )
+            conversation = conversation_repository.get_conversation(req.conversation_id, user["user_id"])
         else:
-            conversation, user_message = (
-                conversation_repository.create_conversation_with_message(
-                    user["user_id"], req.message, client_message_id
-                )
+            conversation, user_message = conversation_repository.create_conversation_with_message(
+                user["user_id"], req.message, client_message_id
             )
             new_conversation = True
 
         conversation_id = conversation["id"]
         if new_conversation:
             agent = _get_conversation_agent(
-                conversation_id,
-                user["user_id"],
-                before_ordinal=user_message["ordinal"],
+                conversation_id, user, before_ordinal=user_message["ordinal"]
             )
         elif user_message is None:
-            # Hydrate before the new user message is stored to avoid duplication.
-            agent = _get_conversation_agent(
-                conversation_id, user["user_id"]
-            )
+            agent = _get_conversation_agent(conversation_id, user)
             user_message, _ = conversation_repository.append_user_message(
-                conversation_id,
-                user["user_id"],
-                req.message,
-                client_message_id,
+                conversation_id, user["user_id"], req.message, client_message_id
             )
         else:
             existing_reply = conversation_repository.get_reply(user_message["id"])
@@ -265,275 +512,187 @@ def chat(req: ChatRequest):
                 return ChatResponse(
                     response=existing_reply["content"],
                     response_html=render_chat_markdown(existing_reply["content"]),
-                    tools_used=existing_reply["tools_used"],
-                    conversation_id=conversation_id,
-                    title=conversation["title"],
-                    message_id=existing_reply["id"],
+                    tools_used=existing_reply["tools_used"], conversation_id=conversation_id,
+                    title=conversation["title"], message_id=existing_reply["id"],
                     created_at=existing_reply["created_at"],
                 )
             agent = _get_conversation_agent(
-                conversation_id,
-                user["user_id"],
-                before_ordinal=user_message["ordinal"],
-                force_reload=True,
+                conversation_id, user, before_ordinal=user_message["ordinal"], force_reload=True
             )
 
         audit_before = len(agent.get_audit_log())
-        response = agent.run(req.message)
-        new_logs = agent.get_audit_log()[audit_before:]
-        tools_used = [log["tool"] for log in new_logs]
+        answer = agent.run(req.message)
+        tools_used = [entry["tool"] for entry in agent.get_audit_log()[audit_before:]]
         assistant_message = conversation_repository.append_assistant_message(
-            conversation_id,
-            user["user_id"],
-            response,
-            tools_used,
-            user_message["id"],
+            conversation_id, user["user_id"], answer, tools_used, user_message["id"]
         )
         if agent.last_artifact is not None:
             conversation_repository.save_last_artifact(
                 conversation_id, user["user_id"], agent.last_artifact
             )
         return ChatResponse(
-            response=response,
-            response_html=render_chat_markdown(response),
-            tools_used=tools_used,
-            conversation_id=conversation_id,
-            title=conversation["title"],
-            message_id=assistant_message["id"],
+            response=answer, response_html=render_chat_markdown(answer),
+            tools_used=tools_used, conversation_id=conversation_id,
+            title=conversation["title"], message_id=assistant_message["id"],
             created_at=assistant_message["created_at"],
         )
     except ConversationNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
         if "conversation_id" in locals():
-            sessions.pop(f"conversation:{conversation_id}", None)
+            sessions.pop(_agent_key(user["user_id"], conversation_id), None)
         traceback.print_exc()
-        return JSONResponse(
-            status_code=500,
-            content={
-                "response": f"Error: {exc}",
-                "response_html": "",
-                "tools_used": [],
-            },
-        )
+        return JSONResponse(status_code=500, content={"response": "Internal server error", "response_html": "", "tools_used": []})
     finally:
         lock.release()
 
 
 @app.get("/api/conversations", response_model=ConversationListResponse)
 def list_conversations(
-    limit: int = Query(default=30, ge=1, le=100),
-    cursor: str | None = None,
+    limit: int = Query(30, ge=1, le=100), cursor: str | None = None,
+    user: dict = Depends(require_permissions("conversation:read")),
 ):
-    """List the authenticated user's conversations, newest first."""
     try:
-        user = _current_user()
         items, next_cursor = conversation_repository.list_conversations(
             user["user_id"], limit=limit, cursor=cursor
         )
-        return ConversationListResponse(
-            conversations=items, next_cursor=next_cursor
-        )
+        return ConversationListResponse(conversations=items, next_cursor=next_cursor)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.get(
-    "/api/conversations/{conversation_id}/messages",
-    response_model=MessageListResponse,
-)
+@app.get("/api/conversations/{conversation_id}/messages", response_model=MessageListResponse)
 def list_conversation_messages(
-    conversation_id: str,
-    limit: int = Query(default=50, ge=1, le=200),
-    before: int | None = Query(default=None, ge=1),
+    conversation_id: str, limit: int = Query(50, ge=1, le=200),
+    before: int | None = Query(None, ge=1),
+    user: dict = Depends(require_permissions("conversation:read")),
 ):
-    """Return display-safe message history for one owned conversation."""
     try:
-        user = _current_user()
         messages, next_before = conversation_repository.list_messages(
-            conversation_id,
-            user["user_id"],
-            limit=limit,
-            before=before,
+            conversation_id, user["user_id"], limit=limit, before=before
         )
         return MessageListResponse(
-            messages=[
-                StoredMessage(
-                    **item,
-                    response_html=(
-                        render_chat_markdown(item["content"])
-                        if item["role"] == "assistant"
-                        else ""
-                    ),
-                )
-                for item in messages
-            ],
-            next_before=next_before,
+            messages=[StoredMessage(
+                **item,
+                response_html=render_chat_markdown(item["content"]) if item["role"] == "assistant" else "",
+            ) for item in messages], next_before=next_before,
         )
     except ConversationNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.post("/api/clear")
-def clear_session(req: ClearRequest):
-    """Evict legacy transient state without deleting durable conversations."""
-    session_id = req.session_id or "default"
-    sessions.pop(f"legacy:{session_id}", None)
+def clear_session(
+    req: ClearRequest,
+    user: dict = Depends(require_permissions("conversation:write")),
+):
     if req.conversation_id:
-        sessions.pop(f"conversation:{req.conversation_id}", None)
-    return {
-        "status": "cache_cleared",
-        "session_id": session_id,
-        "conversation_id": req.conversation_id,
-    }
+        try:
+            conversation_repository.get_conversation(req.conversation_id, user["user_id"])
+        except ConversationNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        sessions.pop(_agent_key(user["user_id"], req.conversation_id), None)
+    return {"status": "cache_cleared", "conversation_id": req.conversation_id}
 
 
 @app.get("/api/audit")
-def get_audit(session_id: str = "default"):
-    """Return durable audit entries for one conversation or legacy session."""
-    user = _current_user()
+def get_audit(
+    session_id: str = "default",
+    user: dict = Depends(require_permissions("audit:read")),
+):
+    if session_id == "default":
+        return {"audit_log": []}
     try:
         uuid.UUID(session_id)
-        context_id = f"conversation:{session_id}"
         conversation_repository.get_conversation(session_id, user["user_id"])
-    except ValueError:
-        context_id = f"legacy:{session_id}"
-    except ConversationNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return {
-        "audit_log": audit_log_repository.list_entries(
-            context_id,
-            user["user_id"],
-        )
-    }
+    except (ValueError, ConversationNotFoundError) as exc:
+        raise HTTPException(status_code=404, detail="Conversation not found") from exc
+    return {"audit_log": audit_log_repository.list_entries(
+        f"conversation:{session_id}", user["user_id"]
+    )}
 
 
 @app.get("/api/memories", response_model=MemoryFactsResponse)
-def get_memory_facts(session_id: str = "default", limit: int = 100):
-    """Return durable facts and preferences for the authenticated session user."""
+def get_memory_facts(
+    limit: int = 100,
+    user: dict = Depends(require_permissions("memory:read")),
+):
     try:
-        safe_limit = min(max(limit, 1), 500)
-        agent = get_agent(session_id)
-        user = check_authentication(agent.service_api_key)
-        if "memory:read" not in user.get("scopes", []):
-            raise PermissionError("Missing required scope: memory:read")
         memories = list_all_memories(
-            limit=safe_limit,
-            user_id=user["user_id"],
+            limit=min(max(limit, 1), 500), user_id=user["user_id"],
             categories={"fact", "user_preference"},
         )
-
         unique = {}
         for memory in memories:
             metadata = memory.get("metadata", {})
             category = metadata.get("category", "general")
-            if category not in {"fact", "user_preference"}:
-                continue
             text = memory.get("text", "").strip()
-            if not text:
+            if category not in {"fact", "user_preference"} or not text:
                 continue
             key = (category, " ".join(text.casefold().split()))
             candidate = MemoryFact(
-                id=str(memory.get("id", "")),
-                text=text,
-                category=category,
-                created_at=metadata.get("created_at", ""),
-                topic=metadata.get("topic", ""),
-                value=metadata.get("value", ""),
-                polarity=metadata.get("polarity", ""),
+                id=str(memory.get("id", "")), text=text, category=category,
+                created_at=metadata.get("created_at", ""), topic=metadata.get("topic", ""),
+                value=metadata.get("value", ""), polarity=metadata.get("polarity", ""),
                 confidence=metadata.get("confidence", 0.0),
             )
-            previous = unique.get(key)
-            if previous is None or candidate.created_at > previous.created_at:
+            if key not in unique or candidate.created_at > unique[key].created_at:
                 unique[key] = candidate
-
-        facts = sorted(
-            unique.values(),
-            key=lambda item: item.created_at,
-            reverse=True,
-        )
+        facts = sorted(unique.values(), key=lambda item: item.created_at, reverse=True)
         return MemoryFactsResponse(total=len(facts), facts=facts)
     except Exception as exc:
         traceback.print_exc()
-        return JSONResponse(
-            status_code=500,
-            content={"detail": f"Could not load memory facts: {exc}"},
-        )
+        return JSONResponse(status_code=500, content={"detail": "Could not load memory facts"})
 
 
 @app.get("/api/documents", response_model=MemoryDocumentsResponse)
-def get_memory_documents(session_id: str = "default", limit: int = 500):
-    """Return saved document sources grouped across their RAG chunks."""
+def get_memory_documents(
+    limit: int = 500,
+    user: dict = Depends(require_permissions("memory:read")),
+):
     try:
-        safe_limit = min(max(limit, 1), 2_000)
-        agent = get_agent(session_id)
-        user = check_authentication(agent.service_api_key)
-        if "memory:read" not in user.get("scopes", []):
-            raise PermissionError("Missing required scope: memory:read")
         memories = list_all_memories(
-            limit=safe_limit,
-            user_id=user["user_id"],
+            limit=min(max(limit, 1), 2000), user_id=user["user_id"],
             categories={"document", "note", "task"},
         )
-
         grouped: dict[str, list[dict]] = {}
         for memory in memories:
             metadata = memory.get("metadata", {})
-            group_key = (
-                metadata.get("source_id")
-                or metadata.get("content_hash")
-                or str(memory.get("id", ""))
-            )
-            grouped.setdefault(str(group_key), []).append(memory)
-
+            key = metadata.get("source_id") or metadata.get("content_hash") or str(memory.get("id", ""))
+            grouped.setdefault(str(key), []).append(memory)
         documents = []
         for source_id, chunks in grouped.items():
             chunks.sort(key=lambda item: item.get("metadata", {}).get("chunk_index", 0))
             metadata = chunks[0].get("metadata", {})
-            documents.append(
-                MemoryDocument(
-                    source_id=source_id,
-                    file_id=metadata.get("file_id", ""),
-                    file_name=metadata.get("file_name", "") or "Saved document",
-                    category=metadata.get("category", "document"),
-                    created_at=metadata.get("created_at", ""),
-                    content_hash=metadata.get("content_hash", ""),
-                    chunk_count=metadata.get("chunk_count", len(chunks)),
-                    stored_chunks=len(chunks),
-                    preview=chunks[0].get("text", "")[:240],
-                )
-            )
+            documents.append(MemoryDocument(
+                source_id=source_id, file_id=metadata.get("file_id", ""),
+                file_name=metadata.get("file_name", "") or "Saved document",
+                category=metadata.get("category", "document"),
+                created_at=metadata.get("created_at", ""),
+                content_hash=metadata.get("content_hash", ""),
+                chunk_count=metadata.get("chunk_count", len(chunks)),
+                stored_chunks=len(chunks), preview=chunks[0].get("text", "")[:240],
+            ))
         documents.sort(key=lambda item: item.created_at, reverse=True)
         return MemoryDocumentsResponse(total=len(documents), documents=documents)
     except Exception as exc:
         traceback.print_exc()
-        return JSONResponse(
-            status_code=500,
-            content={"detail": f"Could not load memory documents: {exc}"},
-        )
+        return JSONResponse(status_code=500, content={"detail": "Could not load memory documents"})
 
 
 @app.get("/api/health")
 def health():
-    """Report database readiness without exposing connection details."""
     database_ok = conversation_repository.healthcheck()
     return JSONResponse(
         status_code=200 if database_ok else 503,
-        content={
-            "status": "ok" if database_ok else "degraded",
-            "database": "ok" if database_ok else "unavailable",
-            "port": 9004,
-        },
+        content={"status": "ok" if database_ok else "degraded", "database": "ok" if database_ok else "unavailable", "port": 9004},
     )
 
 
-# Web UI
-
 @app.get("/", response_class=HTMLResponse)
 def serve_ui():
-    """Serve the bundled chat interface."""
-    with open("static/index.html", "r", encoding="utf-8") as f:
-        return f.read()
+    with open("static/index.html", "r", encoding="utf-8") as handle:
+        return handle.read()
 
 
 if __name__ == "__main__":

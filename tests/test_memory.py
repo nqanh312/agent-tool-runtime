@@ -21,6 +21,19 @@ from services.memory_extractor import (
 )
 from tools import memory
 
+ADMIN = {
+    "user_id": "user_admin", "role": "admin", "is_active": True,
+    "permissions": ["drive:read", "memory:read", "memory:write"],
+}
+STANDARD_USER = {
+    "user_id": "user_standard", "role": "user", "is_active": True,
+    "permissions": ["drive:read", "memory:read", "memory:write"],
+}
+GUEST = {
+    "user_id": "user_guest", "role": "guest", "is_active": True,
+    "permissions": ["drive:read", "memory:read"],
+}
+
 
 def _vector(first: float = 1.0, second: float = 0.0) -> list[float]:
     return [first, second] + [0.0] * (EMBEDDING_DIM - 2)
@@ -36,6 +49,19 @@ class _FinalResponseLLM:
     def complete(self, **_request):
         self.requests.append(_request)
         return ModelResponse(text="Đã hiểu.", stop_reason="stop")
+
+
+class _SequenceResponseLLM:
+    provider = "test"
+    model = "test-model"
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.requests = []
+
+    def complete(self, **request):
+        self.requests.append(request)
+        return self.responses.pop(0)
 
 
 class MemoryExtractorTests(unittest.TestCase):
@@ -127,6 +153,18 @@ class MemoryExtractorTests(unittest.TestCase):
         self.assertEqual(plan.search_query, "user preferences")
         self.assertEqual(list(plan.memories), [])
 
+    def test_fci_routes_local_file_reads_separately(self):
+        client, _create = self._client_returning(
+            [],
+            intent="read_local_file",
+            file_query=r"C:\docs\notes.pdf",
+        )
+        with patch.object(memory_extractor, "_get_client", return_value=client):
+            plan = plan_user_turn(r"Read C:\docs\notes.pdf")
+
+        self.assertEqual(plan.intent, "read_local_file")
+        self.assertEqual(plan.file_query, r"C:\docs\notes.pdf")
+
     def test_agent_saves_extracted_memory_before_calling_the_llm(self):
         captured = []
 
@@ -155,7 +193,7 @@ class MemoryExtractorTests(unittest.TestCase):
             patch.object(memory.vectorstore, "save_memory", side_effect=fake_save),
         ):
             llm = _FinalResponseLLM()
-            response = Agent(llm_client=llm).run("I like Python")
+            response = Agent(principal=ADMIN, llm_client=llm).run("I like Python")
 
         self.assertEqual(response, "Đã hiểu.")
         self.assertEqual(captured[0][0], "The user likes Python.")
@@ -171,6 +209,22 @@ class MemoryExtractorTests(unittest.TestCase):
             "save_document_memory",
             {tool["name"] for tool in llm.requests[0]["tools"]},
         )
+
+    def test_guest_does_not_run_automatic_memory_writes(self):
+        extracted = ExtractedMemory(
+            content="The user likes Python.", category="user_preference",
+            topic="programming_language", value="Python",
+            canonical_value="python", polarity="like", confidence=0.99,
+        )
+        with patch.object(
+            agent_module, "plan_user_turn",
+            return_value=TurnPlan(intent="general_chat", memories=(extracted,)),
+        ):
+            response = Agent(principal=GUEST, llm_client=_FinalResponseLLM()).run(
+                "I like Python"
+            )
+        self.assertEqual(response, "Đã hiểu.")
+        self.assertEqual(AUDIT_LOG, [])
 
     def test_agent_can_upsert_fact_and_save_document_in_the_same_turn(self):
         extracted = ExtractedMemory(
@@ -204,7 +258,7 @@ class MemoryExtractorTests(unittest.TestCase):
             ) as document_save,
         ):
             llm = _FinalResponseLLM()
-            tested_agent = Agent(llm_client=llm)
+            tested_agent = Agent(principal=ADMIN, llm_client=llm)
             tested_agent.last_artifact = {
                 "file_id": "file-1",
                 "file_name": "assignment.pptx",
@@ -238,13 +292,94 @@ class MemoryExtractorTests(unittest.TestCase):
             "plan_user_turn",
             return_value=TurnPlan(intent="general_chat"),
         ):
-            response = Agent(llm_client=llm).run("Hello")
+            response = Agent(principal=ADMIN, llm_client=llm).run("Hello")
 
         self.assertEqual(response, "Đã hiểu.")
         tool_names = {tool["name"] for tool in llm.requests[0]["tools"]}
         self.assertNotIn("save_document_memory", tool_names)
         self.assertNotIn("upsert_user_memory", tool_names)
         self.assertNotIn("list_drive_files", tool_names)
+        self.assertNotIn("read_file", tool_names)
+
+    def test_local_file_route_only_exposes_read_file(self):
+        llm = _FinalResponseLLM()
+        with patch.object(
+            agent_module,
+            "plan_user_turn",
+            return_value=TurnPlan(
+                intent="read_local_file",
+                file_query=r"C:\docs\notes.pdf",
+            ),
+        ):
+            Agent(principal=ADMIN, llm_client=llm).run(r"Read C:\docs\notes.pdf")
+
+        self.assertEqual(
+            {tool["name"] for tool in llm.requests[0]["tools"]},
+            {"read_file"},
+        )
+
+    def test_agent_retries_pseudo_tool_text_and_returns_clean_answer(self):
+        pseudo_call = json.dumps(
+            {
+                "action": "dalle.text2im",
+                "action_input": '{"prompt":"a cat"}',
+                "thought": "I will call an image tool.",
+            }
+        )
+        llm = _SequenceResponseLLM(
+            [
+                ModelResponse(text=pseudo_call, stop_reason="stop"),
+                ModelResponse(
+                    text="I cannot generate images in this session.",
+                    stop_reason="stop",
+                ),
+            ]
+        )
+        with patch.object(
+            agent_module,
+            "plan_user_turn",
+            return_value=TurnPlan(intent="general_chat"),
+        ):
+            tested_agent = Agent(principal=ADMIN, llm_client=llm)
+            response = tested_agent.run("Draw a cat")
+
+        self.assertEqual(response, "I cannot generate images in this session.")
+        self.assertEqual(len(llm.requests), 2)
+        self.assertEqual(llm.requests[0]["tools"], [])
+        self.assertIn(
+            "previous response was rejected",
+            llm.requests[1]["system_prompt"],
+        )
+        self.assertNotIn(pseudo_call, str(tested_agent.conversation_history))
+
+    def test_agent_falls_back_after_repeated_pseudo_tool_text(self):
+        pseudo_call = json.dumps(
+            {
+                "action": "dalle.text2im",
+                "action_input": '{"prompt":"a cat"}',
+                "thought": "call tool",
+            }
+        )
+        llm = _SequenceResponseLLM(
+            [
+                ModelResponse(text=pseudo_call, stop_reason="stop"),
+                ModelResponse(
+                    text=f"```json\n{pseudo_call}\n```",
+                    stop_reason="stop",
+                ),
+            ]
+        )
+        with patch.object(
+            agent_module,
+            "plan_user_turn",
+            return_value=TurnPlan(intent="general_chat"),
+        ):
+            response = Agent(principal=ADMIN, llm_client=llm).run("Vẽ giúp tôi ảnh con mèo")
+
+        self.assertEqual(len(llm.requests), 2)
+        self.assertIn("chưa được cấu hình công cụ tạo ảnh", response)
+        self.assertNotIn("action", response)
+        self.assertNotIn("thought", response)
 
     def test_recall_route_prefetches_rag_and_does_not_expose_drive(self):
         llm = _FinalResponseLLM()
@@ -270,7 +405,7 @@ class MemoryExtractorTests(unittest.TestCase):
             patch.object(memory.embedding, "embed_query", return_value=_vector()),
             patch.object(memory.vectorstore, "search_memory", return_value=stored),
         ):
-            response = Agent(llm_client=llm).run(
+            response = Agent(principal=ADMIN, llm_client=llm).run(
                 "What are the Drive Agent assignment requirements?"
             )
 
@@ -296,7 +431,7 @@ class MemoryExtractorTests(unittest.TestCase):
                 "polarity": "like",
                 "confidence": 0.99,
             },
-            "sk-user-002",
+            STANDARD_USER,
             model_initiated=True,
         )
 
@@ -365,7 +500,7 @@ class MemoryToolTests(unittest.TestCase):
             response = registry.call(
                 "save_document_memory",
                 {"content": content, "category": "document"},
-                "sk-user-002",
+                STANDARD_USER,
             )
 
         self.assertNotIn("error", response)
@@ -464,7 +599,7 @@ app = FastAPI()
             response = registry.call(
                 "search_memory",
                 {"query": "What language do I like?"},
-                "sk-user-002",
+                STANDARD_USER,
             )
 
         self.assertEqual(response["result"]["total_results"], 0)

@@ -1,15 +1,27 @@
-"""Tests for the chat API and bundled Markdown-aware UI."""
+"""Tests for protected APIs and the JWT-aware bundled UI."""
 
 import unittest
-from types import SimpleNamespace
-from unittest.mock import patch
+import uuid
+from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 
 import server
 
 
+TEST_USER = {
+    "user_id": "user-1", "username": "tester", "display_name": "Tester",
+    "role": "user", "is_active": True, "must_change_password": False,
+    "permissions": [
+        "chat:use", "conversation:read", "conversation:write",
+        "audit:read", "memory:read", "memory:write", "drive:read",
+    ],
+}
+
+
 class _FakeAgent:
+    last_artifact = None
+
     def run(self, _message):
         return "### Result\n\nRead $\\rightarrow$ display"
 
@@ -20,140 +32,96 @@ class _FakeAgent:
 class ServerRenderingTests(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(server.app)
+        server.app.dependency_overrides[server.current_principal] = lambda: TEST_USER
+
+    def tearDown(self):
+        server.app.dependency_overrides.clear()
+        server.sessions.clear()
+
+    def test_protected_endpoint_requires_bearer_without_override(self):
+        server.app.dependency_overrides.clear()
+        response = self.client.get("/api/conversations")
+        self.assertEqual(response.status_code, 401)
+
+    def test_standard_user_cannot_call_admin_api(self):
+        response = self.client.get("/api/admin/users")
+        self.assertEqual(response.status_code, 403)
+
+    def test_clear_checks_conversation_ownership(self):
+        with patch.object(
+            server.conversation_repository,
+            "get_conversation",
+            side_effect=server.ConversationNotFoundError("Conversation not found"),
+        ):
+            response = self.client.post(
+                "/api/clear", json={"conversation_id": str(uuid.uuid4())}
+            )
+        self.assertEqual(response.status_code, 404)
 
     def test_chat_returns_plain_text_and_sanitized_html(self):
-        with patch.object(server, "get_agent", return_value=_FakeAgent()):
+        conversation_id = str(uuid.uuid4())
+        repository = MagicMock()
+        repository.find_user_message.return_value = None
+        repository.create_conversation_with_message.return_value = (
+            {"id": conversation_id, "title": "Read file"},
+            {"id": str(uuid.uuid4()), "ordinal": 1},
+        )
+        repository.append_assistant_message.return_value = {
+            "id": str(uuid.uuid4()), "created_at": "2026-09-05T12:00:00+00:00",
+        }
+        with (
+            patch.object(server, "conversation_repository", repository),
+            patch.object(server, "_get_conversation_agent", return_value=_FakeAgent()),
+        ):
             response = self.client.post(
                 "/api/chat",
-                json={"session_id": "test", "message": "Read file"},
+                json={"client_message_id": "message-1", "message": "Read file"},
             )
-
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertEqual(body["response"], "### Result\n\nRead $\\rightarrow$ display")
         self.assertIn("<h3>Result</h3>", body["response_html"])
-        self.assertIn("Read → display", body["response_html"])
 
-    def test_ui_inserts_only_server_sanitized_assistant_html(self):
-        response = self.client.get("/")
-
-        self.assertEqual(response.status_code, 200)
-        self.assertIn("div.innerHTML = safeHtml", response.text)
-        self.assertIn("data.response_html", response.text)
-        self.assertIn("div.textContent = text", response.text)
-
-    def test_memory_api_returns_only_user_facts_and_preferences(self):
+    def test_memory_api_uses_authenticated_user(self):
         memories = [
-            {
-                "id": "preference-1",
-                "text": "Người dùng thích Python.",
-                "metadata": {
-                    "category": "user_preference",
-                    "created_at": "2026-09-05T10:00:00+00:00",
-                },
-            },
-            {
-                "id": "document-1",
-                "text": "Document chunk",
-                "metadata": {"category": "document"},
-            },
-            {
-                "id": "fact-1",
-                "text": "Tên người dùng là An.",
-                "metadata": {
-                    "category": "fact",
-                    "created_at": "2026-09-05T11:00:00+00:00",
-                },
-            },
+            {"id": "fact-1", "text": "User likes Python", "metadata": {"category": "fact", "created_at": "2026-09-05T11:00:00+00:00"}},
+            {"id": "document-1", "text": "Document", "metadata": {"category": "document"}},
         ]
-        fake_agent = SimpleNamespace(service_api_key="sk-admin-001")
-
-        with (
-            patch.object(server, "get_agent", return_value=fake_agent),
-            patch.object(server, "list_all_memories", return_value=memories) as listing,
-        ):
-            response = self.client.get("/api/memories?session_id=test")
-
+        with patch.object(server, "list_all_memories", return_value=memories) as listing:
+            response = self.client.get("/api/memories")
         self.assertEqual(response.status_code, 200)
-        body = response.json()
-        self.assertEqual(body["total"], 2)
-        self.assertEqual(body["facts"][0]["category"], "fact")
-        self.assertEqual(body["facts"][1]["category"], "user_preference")
+        self.assertEqual(response.json()["total"], 1)
         listing.assert_called_once_with(
-            limit=100,
-            user_id="user_admin",
-            categories={"fact", "user_preference"},
+            limit=100, user_id="user-1", categories={"fact", "user_preference"}
         )
 
-    def test_ui_has_memory_panel_and_uses_text_content_for_facts(self):
-        response = self.client.get("/")
-
+    def test_documents_api_groups_chunks_by_source(self):
+        memories = [{
+            "id": f"chunk-{index}", "text": f"Chunk {index}",
+            "metadata": {"category": "document", "source_id": "source-1", "file_name": "assignment.pptx", "chunk_index": index, "chunk_count": 2},
+        } for index in range(2)]
+        with patch.object(server, "list_all_memories", return_value=memories):
+            response = self.client.get("/api/documents")
         self.assertEqual(response.status_code, 200)
-        self.assertIn('id="memoryPanel"', response.text)
-        self.assertIn("/api/memories?session_id=", response.text)
-        self.assertIn("content.textContent = fact.text", response.text)
-        self.assertNotIn("content.innerHTML = fact.text", response.text)
+        self.assertEqual(response.json()["documents"][0]["stored_chunks"], 2)
 
-    def test_documents_api_groups_rag_chunks_by_source(self):
-        memories = [
-            {
-                "id": f"chunk-{index}",
-                "text": f"Chunk {index}",
-                "metadata": {
-                    "category": "document",
-                    "source_id": "source-1",
-                    "file_id": "drive-1",
-                    "file_name": "assignment.pptx",
-                    "content_hash": "hash-1",
-                    "chunk_index": index,
-                    "chunk_count": 2,
-                    "created_at": "2026-09-05T12:00:00+00:00",
-                },
-            }
-            for index in range(2)
-        ]
-        fake_agent = SimpleNamespace(service_api_key="sk-admin-001")
+    def test_audit_api_validates_conversation_ownership(self):
+        conversation_id = str(uuid.uuid4())
         with (
-            patch.object(server, "get_agent", return_value=fake_agent),
-            patch.object(server, "list_all_memories", return_value=memories),
-        ):
-            response = self.client.get("/api/documents?session_id=test")
-
-        self.assertEqual(response.status_code, 200)
-        body = response.json()
-        self.assertEqual(body["total"], 1)
-        self.assertEqual(body["documents"][0]["file_name"], "assignment.pptx")
-        self.assertEqual(body["documents"][0]["stored_chunks"], 2)
-
-    def test_ui_persists_session_and_exposes_documents_panel(self):
-        response = self.client.get("/")
-
-        self.assertEqual(response.status_code, 200)
-        self.assertIn("localStorage.getItem(SESSION_STORAGE_KEY)", response.text)
-        self.assertIn('id="documentPanel"', response.text)
-        self.assertIn("/api/documents?session_id=", response.text)
-        self.assertIn("title.textContent = documentMemory.file_name", response.text)
-
-    def test_audit_api_reads_persisted_conversation_entries(self):
-        conversation_id = "72f0ae68-c8bb-4c56-a12c-7811199f87ca"
-        persisted = [{"tool": "echo", "status": "success", "steps": []}]
-        repository = unittest.mock.MagicMock()
-        repository.list_entries.return_value = persisted
-
-        with (
-            patch.object(server, "audit_log_repository", repository),
             patch.object(server.conversation_repository, "get_conversation"),
+            patch.object(server.audit_log_repository, "list_entries", return_value=[]) as listing,
         ):
-            response = self.client.get(
-                f"/api/audit?session_id={conversation_id}"
-            )
-
+            response = self.client.get(f"/api/audit?session_id={conversation_id}")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["audit_log"], persisted)
-        repository.list_entries.assert_called_once_with(
-            f"conversation:{conversation_id}",
-            "user_admin",
-        )
+        listing.assert_called_once_with(f"conversation:{conversation_id}", "user-1")
+
+    def test_ui_contains_login_refresh_admin_and_safe_rendering(self):
+        body = self.client.get("/").text
+        self.assertIn('id="loginForm"', body)
+        self.assertIn("/api/auth/refresh", body)
+        self.assertIn('id="adminPanel"', body)
+        self.assertIn("node.innerHTML = safeHtml", body)
+        self.assertIn("node.textContent = text", body)
 
 
 if __name__ == "__main__":

@@ -406,7 +406,7 @@ upsert_user_memory_tool = ToolDefinition(
             "confidence",
         ],
     },
-    required_scopes=["memory:write"],
+    required_permissions=["memory:write"],
     handler=upsert_user_memory,
     model_visible=False,
 )
@@ -463,7 +463,7 @@ save_document_memory_tool = ToolDefinition(
         },
         "required": ["content"],
     },
-    required_scopes=["memory:write"],
+    required_permissions=["memory:write"],
     handler=save_document_memory,
     model_visible=False,
 )
@@ -511,7 +511,7 @@ search_memory_tool = ToolDefinition(
         },
         "required": ["query"],
     },
-    required_scopes=["memory:read"],
+    required_permissions=["memory:read"],
     handler=search_memory,
 )
 

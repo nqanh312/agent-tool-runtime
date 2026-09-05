@@ -13,8 +13,17 @@ from registry.registry import (
 )
 from tools import google_drive
 
+ADMIN = {
+    "user_id": "user_admin", "role": "admin", "is_active": True,
+    "permissions": ["drive:read", "memory:read", "memory:write"],
+}
+GUEST = {
+    "user_id": "user_guest", "role": "guest", "is_active": True,
+    "permissions": ["drive:read", "memory:read"],
+}
 
-def _echo_tool(required_scopes=None):
+
+def _echo_tool(required_permissions=None):
     return ToolDefinition(
         name="echo",
         description="Echo a message.",
@@ -26,7 +35,7 @@ def _echo_tool(required_scopes=None):
             },
             "required": ["message"],
         },
-        required_scopes=required_scopes or [],
+        required_permissions=required_permissions or [],
         handler=lambda message, count=1: message * count,
     )
 
@@ -70,7 +79,7 @@ class RegistryTests(unittest.TestCase):
             response = registry.call(
                 tool_name="list_drive_files",
                 arguments={},
-                api_key="sk-admin-001",
+                principal=ADMIN,
             )
 
         self.assertEqual(
@@ -90,7 +99,7 @@ class RegistryTests(unittest.TestCase):
         registry = ToolRegistry(audit_sink=persisted.append)
         registry.register(_echo_tool())
 
-        response = registry.call("echo", {"message": "hi"}, "sk-admin-001")
+        response = registry.call("echo", {"message": "hi"}, ADMIN)
 
         self.assertEqual(response, {"result": "hi"})
         self.assertEqual(len(persisted), 1)
@@ -101,7 +110,7 @@ class RegistryTests(unittest.TestCase):
         registry = ToolRegistry()
         registry.register(_echo_tool())
 
-        response = registry.call("echo", {"message": "hi"}, "wrong-key")
+        response = registry.call("echo", {"message": "hi"}, None)
 
         self.assertEqual(response["error_type"], "PermissionError")
         self.assertEqual(AUDIT_LOG[-1]["user_id"], "anonymous")
@@ -113,12 +122,18 @@ class RegistryTests(unittest.TestCase):
 
     def test_rejects_missing_scope(self):
         registry = ToolRegistry()
-        registry.register(_echo_tool(required_scopes=["memory:write"]))
+        registry.register(_echo_tool(required_permissions=["memory:write"]))
 
-        response = registry.call("echo", {"message": "hi"}, "sk-guest-003")
+        response = registry.call("echo", {"message": "hi"}, GUEST)
 
         self.assertEqual(response["error_type"], "PermissionError")
         self.assertIn("memory:write", response["error"])
+
+    def test_model_tool_catalog_is_filtered_by_permissions(self):
+        registry = ToolRegistry()
+        registry.register(_echo_tool(required_permissions=["memory:write"]))
+        self.assertEqual(registry.list_tools(GUEST), [])
+        self.assertEqual([tool["name"] for tool in registry.list_tools(ADMIN)], ["echo"])
 
     def test_rate_limiter_uses_a_sliding_window(self):
         limiter = RateLimiter(max_calls=2, window_seconds=60)

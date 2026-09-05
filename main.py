@@ -1,9 +1,12 @@
 """Provide an interactive command-line interface for the agent."""
 
 import json
+import getpass
+import secrets
 import sys
 from agent import Agent
-from registry.registry import check_authentication
+from config import CLI_SERVICE_API_KEY, CLI_USER_ID
+from services.auth import AuthenticationError, auth_repository
 from services.audit_logs import audit_log_repository
 
 
@@ -27,11 +30,19 @@ def main():
     print("  Capabilities: Google Drive | Read File | RAG Memory")
     print("="*60)
 
-    api_key = "sk-admin-001"
+    if not CLI_SERVICE_API_KEY:
+        raise SystemExit("CLI_SERVICE_API_KEY must be configured")
+    supplied_key = getpass.getpass("CLI service API key: ")
+    if not secrets.compare_digest(supplied_key, CLI_SERVICE_API_KEY):
+        raise SystemExit("Invalid CLI service API key")
     context_id = "cli:default"
-    user_id = check_authentication(api_key)["user_id"]
+    try:
+        principal = auth_repository.principal(CLI_USER_ID)
+    except AuthenticationError as exc:
+        raise SystemExit(str(exc)) from exc
+    user_id = principal["user_id"]
     agent = Agent(
-        service_api_key=api_key,
+        principal=principal,
         audit_sink=lambda entry: audit_log_repository.append(context_id, entry),
     )
 
@@ -74,7 +85,7 @@ def main():
         if user_input.lower() == "/memory":
             try:
                 from services.vectorstore import list_all_memories
-                memories = list_all_memories()
+                memories = list_all_memories(user_id=user_id)
                 if not memories:
                     print("\n[No memories stored yet]")
                 else:

@@ -23,7 +23,7 @@ def get_current_user() -> dict:
     return deepcopy(_current_user.get() or {
         "user_id": "anonymous",
         "role": "unknown",
-        "scopes": [],
+        "permissions": [],
     })
 
 
@@ -90,55 +90,34 @@ def validate_schema(tool: ToolDefinition, arguments: dict) -> dict:
 
 # Step 2: authenticate the caller.
 
-USER_DB: dict[str, dict] = {
-    "sk-admin-001": {
-        "user_id": "user_admin",
-        "role": "admin",
-        "scopes": [
-            "drive:read",
-            "memory:read", "memory:write",
-        ],
-    },
-    "sk-user-002": {
-        "user_id": "user_standard",
-        "role": "user",
-        "scopes": [
-            "drive:read",
-            "memory:read", "memory:write",
-        ],
-    },
-    "sk-guest-003": {
-        "user_id": "user_guest",
-        "role": "guest",
-        "scopes": ["drive:read", "memory:read"],
-    },
-}
-
-
-def check_authentication(api_key: str) -> dict:
-    """Return the user associated with an API key."""
-    if not api_key:
+def check_authentication(principal: dict | None) -> dict:
+    """Validate an identity produced by the HTTP or CLI authenticator."""
+    if not isinstance(principal, dict):
         raise PermissionError("Authentication required")
-
-    user = USER_DB.get(api_key)
-    if user is None:
-        raise PermissionError("Invalid API key")
-
-    return deepcopy(user)
+    if not principal.get("user_id") or not principal.get("role"):
+        raise PermissionError("Invalid authenticated principal")
+    if principal.get("is_active") is False:
+        raise PermissionError("Account is inactive")
+    permissions = principal.get("permissions")
+    if not isinstance(permissions, (list, tuple, set)):
+        raise PermissionError("Invalid authenticated principal")
+    authenticated = deepcopy(principal)
+    authenticated["permissions"] = list(permissions)
+    return authenticated
 
 
 # Step 3: authorize access to the tool.
 
-def check_scopes(user: dict, tool: ToolDefinition) -> bool:
-    """Verify that the user has every scope required by the tool."""
-    user_scopes = set(user.get("scopes", []))
-    missing_scopes = [
-        scope for scope in tool.required_scopes
-        if scope not in user_scopes
+def check_permissions(user: dict, tool: ToolDefinition) -> bool:
+    """Verify that the principal has every permission required by the tool."""
+    user_permissions = set(user.get("permissions", []))
+    missing_permissions = [
+        permission for permission in tool.required_permissions
+        if permission not in user_permissions
     ]
-    if missing_scopes:
+    if missing_permissions:
         raise PermissionError(
-            f"Missing required scopes: {', '.join(missing_scopes)}"
+            f"Missing required permissions: {', '.join(missing_permissions)}"
         )
     return True
 
@@ -195,7 +174,7 @@ class AuditPersistenceError(RuntimeError):
 AUDIT_STEP_NAMES = (
     "validate_schema",
     "check_authentication",
-    "check_scopes",
+    "check_permissions",
     "check_rate_limit",
     "audit_log",
     "execute_tool",
@@ -204,7 +183,7 @@ AUDIT_STEP_NAMES = (
 AUDIT_STEP_LABELS = (
     "Validate Schema",
     "Check Authentication",
-    "Check Scopes",
+    "Check Permissions",
     "Check Rate Limit",
     "Audit Log",
     "Execute Tool",
@@ -305,8 +284,13 @@ class ToolRegistry:
             raise KeyError(f"[Registry] Tool '{name}' not found. Available: {list(self._tools.keys())}")
         return tool
 
-    def list_tools(self) -> list[dict]:
-        """Return model-facing schemas for all registered tools."""
+    def list_tools(self, principal: dict | None = None) -> list[dict]:
+        """Return model-facing schemas allowed for the authenticated principal."""
+        permissions = (
+            set(principal.get("permissions", []))
+            if isinstance(principal, dict)
+            else set()
+        )
         return [
             {
                 "name": t.name,
@@ -314,14 +298,14 @@ class ToolRegistry:
                 "input_schema": t.input_schema,
             }
             for t in self._tools.values()
-            if t.model_visible
+            if t.model_visible and set(t.required_permissions).issubset(permissions)
         ]
 
     def call(
         self,
         tool_name: str,
         arguments: dict,
-        api_key: str,
+        principal: dict,
         *,
         model_initiated: bool = False,
     ) -> dict:
@@ -332,7 +316,7 @@ class ToolRegistry:
         print(f"  Arguments: {_console_safe(arguments_json)}")
         print(f"{'='*60}")
 
-        user = {"user_id": "anonymous", "role": "unknown", "scopes": []}
+        user = {"user_id": "anonymous", "role": "unknown", "permissions": []}
         audit_arguments = arguments if isinstance(arguments, dict) else {}
         steps = _new_audit_steps()
         current_step = 1
@@ -348,11 +332,11 @@ class ToolRegistry:
             audit_arguments = validated_arguments
 
             current_step = 2
-            user = check_authentication(api_key)
+            user = check_authentication(principal)
             _mark_audit_step(steps, 2, "success")
 
             current_step = 3
-            check_scopes(user, tool)
+            check_permissions(user, tool)
             _mark_audit_step(steps, 3, "success")
 
             current_step = 4

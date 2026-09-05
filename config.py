@@ -56,7 +56,22 @@ DATABASE_URL = os.getenv(
     "postgresql+psycopg://agent:agent@localhost:5432/agent_db",
 ).strip()
 CHAT_CONTEXT_MAX_TOKENS = int(os.getenv("CHAT_CONTEXT_MAX_TOKENS", "12000"))
-SERVICE_API_KEY = os.getenv("SERVICE_API_KEY", "sk-admin-001").strip()
+JWT_SECRET = os.getenv("JWT_SECRET", "").strip()
+JWT_ACCESS_MINUTES = int(os.getenv("JWT_ACCESS_MINUTES", "15"))
+JWT_REFRESH_DAYS = int(os.getenv("JWT_REFRESH_DAYS", "7"))
+JWT_PASSWORD_CHANGE_MINUTES = int(
+    os.getenv("JWT_PASSWORD_CHANGE_MINUTES", "10")
+)
+AUTH_COOKIE_SECURE = os.getenv("AUTH_COOKIE_SECURE", "false").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+CORS_ORIGINS = [
+    value.strip()
+    for value in os.getenv("CORS_ORIGINS", "http://localhost:9004").split(",")
+    if value.strip()
+]
+CLI_SERVICE_API_KEY = os.getenv("CLI_SERVICE_API_KEY", "").strip()
+CLI_USER_ID = os.getenv("CLI_USER_ID", "user_admin").strip()
 
 # Google Drive configuration
 GOOGLE_SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "credentials.json")

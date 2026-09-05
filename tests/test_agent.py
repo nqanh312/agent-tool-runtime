@@ -10,6 +10,11 @@ from services.llm import ModelResponse
 from services.memory_extractor import TurnPlan
 from tools import google_drive
 
+ADMIN = {
+    "user_id": "user_admin", "role": "admin", "is_active": True,
+    "permissions": ["drive:read", "memory:read", "memory:write"],
+}
+
 
 class _FakeLLMClient:
     provider = "test"
@@ -48,7 +53,7 @@ class AgentToolLoopTests(unittest.TestCase):
                 return_value=[{"id": "file-1", "name": "Document"}],
             ),
         ):
-            tested_agent = Agent(llm_client=llm)
+            tested_agent = Agent(principal=ADMIN, llm_client=llm)
             response = tested_agent.run("List files in Drive")
 
         self.assertEqual(response, "Drive has 1 file.")
@@ -104,7 +109,7 @@ class AgentToolLoopTests(unittest.TestCase):
             ),
             patch.object(google_drive.os, "unlink"),
         ):
-            tested_agent = Agent(llm_client=llm)
+            tested_agent = Agent(principal=ADMIN, llm_client=llm)
             response = tested_agent.run("Read Document.txt")
 
         self.assertEqual(response, "File content")

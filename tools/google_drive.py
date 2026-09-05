@@ -36,7 +36,7 @@ list_files_tool = ToolDefinition(
         },
         "required": [],
     },
-    required_scopes=["drive:read"],
+    required_permissions=["drive:read"],
     handler=list_drive_files,
 )
 
@@ -67,7 +67,7 @@ search_files_tool = ToolDefinition(
         },
         "required": ["query"],
     },
-    required_scopes=["drive:read"],
+    required_permissions=["drive:read"],
     handler=search_drive_files,
 )
 
@@ -111,7 +111,7 @@ read_file_tool = ToolDefinition(
         },
         "required": ["file_id"],
     },
-    required_scopes=["drive:read"],
+    required_permissions=["drive:read"],
     handler=get_drive_file,
 )
 

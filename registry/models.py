@@ -9,7 +9,7 @@ class ToolDefinition(BaseModel):
     name: str
     description: str
     input_schema: dict
-    required_scopes: list[str]
+    required_permissions: list[str]
     handler: Callable
     model_visible: bool = True
 

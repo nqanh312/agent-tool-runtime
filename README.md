@@ -146,7 +146,16 @@ MEMORY_COLLECTION=agent_memory
 
 DATABASE_URL=postgresql+psycopg://agent:agent@localhost:5432/agent_db
 CHAT_CONTEXT_MAX_TOKENS=12000
-SERVICE_API_KEY=sk-admin-001
+JWT_SECRET=replace_with_at_least_32_random_characters
+JWT_ACCESS_MINUTES=15
+JWT_REFRESH_DAYS=7
+JWT_PASSWORD_CHANGE_MINUTES=10
+AUTH_COOKIE_SECURE=false
+CORS_ORIGINS=http://localhost:9004
+
+# Local CLI only; it is never accepted by the HTTP API.
+CLI_SERVICE_API_KEY=replace_with_a_random_cli_secret
+CLI_USER_ID=user_admin
 
 GOOGLE_SERVICE_ACCOUNT_FILE=credentials.json
 GOOGLE_DRIVE_FOLDER_ID=your_google_drive_folder_id
@@ -204,7 +213,12 @@ Qdrant persistence implementation.
 ```bash
 docker compose up -d
 alembic upgrade head
+python -m scripts.bootstrap_admin --username admin
 ```
+
+The bootstrap command prompts for a password without echoing it. It activates the
+legacy `user_admin` identity when present so existing conversations and memories keep
+their owner. No default web password is created.
 
 Conversation titles and messages are stored in PostgreSQL. The application does not
 create or alter tables automatically at startup; run Alembic whenever a new migration
@@ -261,19 +275,30 @@ Open [http://localhost:9004](http://localhost:9004). The health endpoint is avai
 
 | Method | Endpoint | Description |
 | --- | --- | --- |
+| `POST` | `/api/auth/login` | Authenticate and receive an access token |
+| `POST` | `/api/auth/refresh` | Rotate the HttpOnly refresh token |
+| `POST` | `/api/auth/logout` | Revoke the current refresh session |
+| `GET` | `/api/auth/me` | Read the authenticated user and permissions |
+| `POST` | `/api/auth/change-password` | Change the current user's password |
+| `GET/POST/PATCH` | `/api/admin/users...` | Manage users; requires `users:manage` |
 | `POST` | `/api/chat` | Send a message, creating a conversation when needed |
 | `GET` | `/api/conversations` | List the current user's conversations |
 | `GET` | `/api/conversations/{id}/messages` | Load a page of stored messages |
 | `POST` | `/api/clear` | Evict transient Agent state without deleting chat history |
 | `GET` | `/api/audit?session_id=...` | Retrieve tool-call audit entries and six-step status trails |
-| `GET` | `/api/memories?session_id=...` | List the user's current facts and preferences |
-| `GET` | `/api/documents?session_id=...` | List saved document sources and chunk counts |
+| `GET` | `/api/memories` | List the user's current facts and preferences |
+| `GET` | `/api/documents` | List saved document sources and chunk counts |
 | `GET` | `/api/health` | Check service availability |
 
 Example request:
 
 ```bash
+curl -X POST http://localhost:9004/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"your-password"}'
+
 curl -X POST http://localhost:9004/api/chat \
+  -H "Authorization: Bearer <access-token>" \
   -H "Content-Type: application/json" \
   -d '{"conversation_id":null,"client_message_id":"b2c28f79-8514-45f1-8aac-1b20beccefda","message":"List my Drive files."}'
 ```
@@ -289,8 +314,8 @@ curl -X POST http://localhost:9004/api/chat \
 | Tool registration | Available |
 | Google Drive listing, download, and reading | Available |
 | Schema validation | Available |
-| API-key authentication | Available (demo only) |
-| Scope authorization | Available |
+| PostgreSQL users and JWT authentication | Available |
+| Fixed-role RBAC for HTTP APIs and tools | Available |
 | Sliding-window rate limiter | Available (in-memory) |
 | Tool execution and audit logging | Available (PostgreSQL) |
 | MarkItDown conversion | Available |
@@ -300,7 +325,10 @@ curl -X POST http://localhost:9004/api/chat \
 | PostgreSQL conversation history and pagination | Available |
 | Responsive conversation-history sidebar | Available |
 
-Authentication and rate limiting remain in-memory and are intended for demonstration rather than production use. Audit logs, chat history, and current artifact state are persisted in PostgreSQL; long-term semantic memory is persisted separately in Qdrant.
+Users, role permissions, refresh sessions, security events, tool audit logs, chat
+history, and current artifact state are persisted in PostgreSQL. Login and tool-call
+rate limit buckets remain process-local. Long-term semantic memory is persisted
+separately in Qdrant and partitioned by authenticated user ID.
 
 ## Research directions
 
@@ -322,8 +350,8 @@ python -m unittest discover -v
 ## Security notes
 
 - Do not hard-code or commit credentials.
-- The in-memory users and service API keys are development fixtures, not a production identity system.
-- CORS currently permits all origins and must be restricted before deployment.
+- Use a unique high-entropy `JWT_SECRET`, enable secure cookies behind HTTPS, and rotate secrets through deployment configuration.
+- Configure an exact `CORS_ORIGINS` allowlist; wildcard origins are not used with credentials.
 - Keep local Qdrant bound to `127.0.0.1`; use authentication and network controls when exposing it remotely.
 - Keep local PostgreSQL bound to `127.0.0.1`; use TLS and managed credentials when deploying it remotely.
 - Local file access should be sandboxed or allowlisted before use in a multi-user environment.
