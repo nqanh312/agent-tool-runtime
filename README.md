@@ -140,9 +140,10 @@ TURN_PLANNER_MODEL=gemma-4-31B-it
 MEMORY_EXTRACTION_MIN_CONFIDENCE=0.7
 MEMORY_RELEVANCE_MIN_SEMANTIC_SCORE=0.7
 
-QDRANT_HOST=localhost
+QDRANT_HOST=127.0.0.1
 QDRANT_PORT=6333
 MEMORY_COLLECTION=agent_memory
+MEMORY_BM25_AVG_LEN=256
 
 DATABASE_URL=postgresql+psycopg://agent:agent@localhost:5432/agent_db
 CHAT_CONTEXT_MAX_TOKENS=12000
@@ -163,7 +164,7 @@ GOOGLE_DRIVE_FOLDER_ID=your_google_drive_folder_id
 
 `GOOGLE_DRIVE_FOLDER_ID` is optional. Leave it empty to list every file accessible to the service account.
 
-For Qdrant Cloud, set `QDRANT_URL` and `QDRANT_API_KEY` instead of the local host/port. Memory is partitioned by the authenticated registry user. Facts and preferences up to the configured token limit remain intact. Documents are parsed into Markdown headings, paragraphs, lists, tables, and fenced code blocks; blocks are packed into token-limited chunks with overlap, and only oversized blocks are hard-split. Retrieval combines cosine similarity with BM25 ranking.
+For Qdrant Cloud, set `QDRANT_URL` and `QDRANT_API_KEY` instead of the local host/port. Memory is partitioned by the authenticated registry user. Facts and preferences up to the configured token limit remain intact. Documents are parsed into Markdown headings, paragraphs, lists, tables, and fenced code blocks; blocks are packed into token-limited chunks with overlap, and only oversized blocks are hard-split. Retrieval performs dense and indexed BM25 sparse searches in Qdrant, scopes IDF statistics to the authenticated user, and fuses candidates server-side with reciprocal-rank fusion.
 
 Select exactly one chat-model provider with `LLM_PROVIDER`:
 
@@ -214,6 +215,8 @@ Qdrant persistence implementation.
 docker compose up -d
 alembic upgrade head
 python -m scripts.bootstrap_admin --username admin
+python -m scripts.migrate_qdrant_hybrid --dry-run
+python -m scripts.migrate_qdrant_hybrid
 ```
 
 The bootstrap command prompts for a password without echoing it. It activates the
@@ -227,6 +230,22 @@ PostgreSQL and Qdrant run under the same `agent-tool-runtime` Compose project an
 store data in named Docker volumes.
 
 The Qdrant dashboard will be available at [http://localhost:6333/dashboard](http://localhost:6333/dashboard).
+
+The Qdrant migration is idempotent. It creates the sparse-vector and payload-index
+schema, backfills `active` and BM25 data for existing points, and deactivates legacy
+append-only preferences already superseded by structured preferences. New writes
+store dense and sparse vectors together, so the migration is only required for
+collections created by an older release.
+
+Run the isolated latency benchmark at 1k, 10k, and 100k chunks per user with:
+
+```bash
+python -m scripts.benchmark_vectorstore --sizes 1000,10000,100000 --samples 200
+```
+
+It reports p50/p95/p99 and QPS as JSON lines, uses a uniquely named temporary
+collection, and removes only that collection when finished. Add `--keep` to retain
+the generated collection for inspection.
 
 Useful container commands:
 
