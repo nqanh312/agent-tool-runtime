@@ -24,7 +24,9 @@ from tools import memory
 
 ADMIN = {
     "user_id": "user_admin", "role": "admin", "is_active": True,
-    "permissions": ["drive:read", "memory:read", "memory:write"],
+    "permissions": [
+        "drive:read", "local_file:read", "memory:read", "memory:write"
+    ],
 }
 STANDARD_USER = {
     "user_id": "user_standard", "role": "user", "is_active": True,
@@ -312,12 +314,38 @@ class MemoryExtractorTests(unittest.TestCase):
                 file_query=r"C:\docs\notes.pdf",
             ),
         ):
-            Agent(principal=ADMIN, llm_client=llm).run(r"Read C:\docs\notes.pdf")
+            Agent(
+                principal=ADMIN,
+                llm_client=llm,
+                include_local_file_tools=True,
+            ).run(r"Read C:\docs\notes.pdf")
 
         self.assertEqual(
             {tool["name"] for tool in llm.requests[0]["tools"]},
             {"read_file"},
         )
+
+    def test_web_agent_does_not_expose_local_paths(self):
+        llm = _FinalResponseLLM()
+        with patch.object(
+            agent_module,
+            "plan_user_turn",
+            return_value=TurnPlan(intent="read_local_file"),
+        ):
+            Agent(principal=ADMIN, llm_client=llm).run(r"Read C:\secrets.txt")
+
+        self.assertEqual(llm.requests[0]["tools"], [])
+
+    def test_planner_failure_fails_closed_without_tools(self):
+        llm = _FinalResponseLLM()
+        with patch.object(
+            agent_module,
+            "plan_user_turn",
+            side_effect=RuntimeError("planner unavailable"),
+        ):
+            Agent(principal=ADMIN, llm_client=llm).run("List my Drive")
+
+        self.assertEqual(llm.requests[0]["tools"], [])
 
     def test_agent_retries_pseudo_tool_text_and_returns_clean_answer(self):
         pseudo_call = json.dumps(

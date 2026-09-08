@@ -22,6 +22,9 @@ TEST_USER = {
 class _FakeAgent:
     last_artifact = None
 
+    def __init__(self):
+        self.principal = {}
+
     def run(self, _message):
         return "### Result\n\nRead $\\rightarrow$ display"
 
@@ -46,6 +49,54 @@ class ServerRenderingTests(unittest.TestCase):
     def test_standard_user_cannot_call_admin_api(self):
         response = self.client.get("/api/admin/users")
         self.assertEqual(response.status_code, 403)
+
+    def test_google_login_start_sets_browser_binding_cookie(self):
+        authorization = {
+            "authorization_url": "https://accounts.google.test/authorize",
+            "browser_binding": "browser-secret",
+        }
+        with patch.object(
+            server.google_oauth_service, "begin", return_value=authorization
+        ) as begin:
+            response = self.client.get(
+                "/api/auth/google/start", follow_redirects=False
+            )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.headers["location"], authorization["authorization_url"])
+        self.assertIn(server.GOOGLE_OAUTH_BINDING_COOKIE, response.cookies)
+        begin.assert_called_once_with(mode="login")
+
+    def test_drive_authorization_is_bound_to_authenticated_user(self):
+        authorization = {
+            "authorization_url": "https://accounts.google.test/drive",
+            "browser_binding": "browser-secret",
+        }
+        with patch.object(
+            server.google_oauth_service, "begin", return_value=authorization
+        ) as begin:
+            response = self.client.post(
+                "/api/integrations/google-drive/authorize"
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["authorization_url"],
+            authorization["authorization_url"],
+        )
+        self.assertIn(server.GOOGLE_OAUTH_BINDING_COOKIE, response.cookies)
+        begin.assert_called_once_with(mode="drive", user_id="user-1")
+
+    def test_cached_agent_receives_current_principal(self):
+        conversation_id = str(uuid.uuid4())
+        key = server._agent_key("user-1", conversation_id)
+        cached = _FakeAgent()
+        cached.principal = {"user_id": "user-1", "permissions": ["memory:write"]}
+        server.sessions[key] = cached
+        downgraded = {**TEST_USER, "permissions": ["chat:use"]}
+
+        result = server._get_conversation_agent(conversation_id, downgraded)
+
+        self.assertIs(result, cached)
+        self.assertEqual(result.principal["permissions"], ["chat:use"])
 
     def test_clear_checks_conversation_ownership(self):
         with patch.object(
@@ -120,6 +171,8 @@ class ServerRenderingTests(unittest.TestCase):
         self.assertIn('id="loginForm"', body)
         self.assertIn("/api/auth/refresh", body)
         self.assertIn('id="adminPanel"', body)
+        self.assertIn('id="googleLoginButton"', body)
+        self.assertIn("/api/integrations/google-drive/authorize", body)
         self.assertIn("node.innerHTML = safeHtml", body)
         self.assertIn("node.textContent = text", body)
 

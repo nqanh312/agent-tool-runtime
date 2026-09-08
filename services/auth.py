@@ -23,6 +23,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     delete,
     func,
     select,
@@ -45,7 +46,7 @@ ROLE_PERMISSIONS: dict[str, tuple[str, ...]] = {
     "admin": (
         "chat:use", "conversation:read", "conversation:write",
         "audit:read", "drive:read", "memory:read", "memory:write",
-        "users:manage",
+        "local_file:read", "users:manage",
     ),
     "user": (
         "chat:use", "conversation:read", "conversation:write",
@@ -150,6 +151,30 @@ class SecurityAuditEvent(AuthBase):
     )
 
 
+class ExternalIdentity(AuthBase):
+    """Stable third-party identity linked to exactly one application user."""
+
+    __tablename__ = "external_identities"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "provider", name="uq_external_identity_user_provider"
+        ),
+    )
+
+    provider: Mapped[str] = mapped_column(String(32), primary_key=True)
+    subject: Mapped[str] = mapped_column(String(255), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    email: Mapped[str] = mapped_column(String(320), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
 class AuthenticationError(PermissionError):
     pass
 
@@ -218,6 +243,7 @@ def _user_to_dict(user: User, permissions: list[str] | None = None) -> dict:
         "role": user.role_name,
         "is_active": user.is_active,
         "must_change_password": user.must_change_password,
+        "has_password": bool(user.password_hash),
         "token_version": user.token_version,
         "created_at": user.created_at.isoformat(),
         "updated_at": user.updated_at.isoformat(),
@@ -257,6 +283,116 @@ class AuthRepository:
                 return None
             permissions = self._permissions(session, user.role_name)
             return _user_to_dict(user, permissions), user.password_hash
+
+    def get_or_create_external_user(
+        self,
+        *,
+        provider: str,
+        subject: str,
+        email: str,
+        display_name: str,
+    ) -> dict:
+        """Resolve an external identity or provision a least-privilege user."""
+        normalized_provider = provider.strip().casefold()
+        normalized_subject = subject.strip()
+        if not normalized_provider or not normalized_subject:
+            raise ValueError("External identity provider and subject are required")
+
+        with self.session_factory.begin() as session:
+            identity = session.get(
+                ExternalIdentity,
+                {"provider": normalized_provider, "subject": normalized_subject},
+            )
+            if identity is not None:
+                user = session.get(User, identity.user_id)
+                if user is None or not user.is_active:
+                    raise AuthenticationError("Invalid or inactive account")
+                if email and identity.email != email:
+                    identity.email = email[:320]
+                    identity.updated_at = utc_now()
+                return _user_to_dict(
+                    user, self._permissions(session, user.role_name)
+                )
+
+            user = User(
+                id=str(uuid.uuid4()),
+                username=f"oauth_{uuid.uuid4().hex[:32]}",
+                display_name=(display_name or email or "Google user").strip()[:120],
+                password_hash=None,
+                role_name="user",
+                is_active=True,
+                must_change_password=False,
+            )
+            session.add(user)
+            session.flush()
+            session.add(ExternalIdentity(
+                provider=normalized_provider,
+                subject=normalized_subject,
+                user_id=user.id,
+                email=(email or "")[:320],
+            ))
+            session.flush()
+            return _user_to_dict(user, self._permissions(session, "user"))
+
+    def link_external_identity(
+        self,
+        user_id: str,
+        *,
+        provider: str,
+        subject: str,
+        email: str,
+    ) -> None:
+        """Link a verified identity without silently merging accounts by email."""
+        normalized_provider = provider.strip().casefold()
+        normalized_subject = subject.strip()
+        with self.session_factory.begin() as session:
+            user = session.get(User, user_id)
+            if user is None or not user.is_active:
+                raise AuthenticationError("Invalid or inactive account")
+            by_subject = session.get(
+                ExternalIdentity,
+                {"provider": normalized_provider, "subject": normalized_subject},
+            )
+            if by_subject is not None and by_subject.user_id != user_id:
+                raise AuthenticationError(
+                    "This Google account is already linked to another user"
+                )
+            by_user = session.scalar(select(ExternalIdentity).where(
+                ExternalIdentity.user_id == user_id,
+                ExternalIdentity.provider == normalized_provider,
+            ))
+            if by_user is not None and by_user.subject != normalized_subject:
+                raise AuthenticationError(
+                    "This user is already linked to another Google account"
+                )
+            identity = by_subject or by_user
+            if identity is None:
+                identity = ExternalIdentity(
+                    provider=normalized_provider,
+                    subject=normalized_subject,
+                    user_id=user_id,
+                    email=(email or "")[:320],
+                )
+                session.add(identity)
+            else:
+                identity.email = (email or identity.email)[:320]
+                identity.updated_at = utc_now()
+
+    def external_identity_for_user(
+        self, user_id: str, provider: str
+    ) -> dict | None:
+        with self.session_factory() as session:
+            identity = session.scalar(select(ExternalIdentity).where(
+                ExternalIdentity.user_id == user_id,
+                ExternalIdentity.provider == provider.strip().casefold(),
+            ))
+            if identity is None:
+                return None
+            return {
+                "provider": identity.provider,
+                "subject": identity.subject,
+                "email": identity.email,
+            }
 
     def principal(self, user_id: str) -> dict:
         user = self.get_user(user_id, principal=True)

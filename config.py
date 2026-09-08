@@ -71,9 +71,36 @@ CORS_ORIGINS = [
     for value in os.getenv("CORS_ORIGINS", "http://localhost:9004").split(",")
     if value.strip()
 ]
-CLI_SERVICE_API_KEY = os.getenv("CLI_SERVICE_API_KEY", "").strip()
 CLI_USER_ID = os.getenv("CLI_USER_ID", "user_admin").strip()
 
-# Google Drive configuration
-GOOGLE_SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "credentials.json")
-GOOGLE_DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID", "")
+# Per-user Google OAuth. Authentication and Drive consent are intentionally
+# separate so users can use the application without granting Drive access.
+GOOGLE_OAUTH_CLIENT_ID = os.getenv("GOOGLE_OAUTH_CLIENT_ID", "").strip()
+GOOGLE_OAUTH_CLIENT_SECRET = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", "").strip()
+GOOGLE_OAUTH_REDIRECT_URI = os.getenv(
+    "GOOGLE_OAUTH_REDIRECT_URI",
+    "http://localhost:9004/api/auth/google/callback",
+).strip()
+GOOGLE_OAUTH_DRIVE_SCOPES = tuple(
+    value.strip()
+    for value in os.getenv(
+        "GOOGLE_OAUTH_DRIVE_SCOPES",
+        "https://www.googleapis.com/auth/drive.readonly",
+    ).split(",")
+    if value.strip()
+)
+GOOGLE_OAUTH_ALLOWED_DOMAIN = os.getenv(
+    "GOOGLE_OAUTH_ALLOWED_DOMAIN", ""
+).strip().casefold()
+GOOGLE_TOKEN_ENCRYPTION_KEY = os.getenv(
+    "GOOGLE_TOKEN_ENCRYPTION_KEY", ""
+).strip()
+GOOGLE_OAUTH_STATE_MINUTES = int(os.getenv("GOOGLE_OAUTH_STATE_MINUTES", "10"))
+
+# Local file access is an explicit CLI-only capability. It fails closed until
+# at least one root is configured (semicolon-separated on Windows).
+LOCAL_FILE_ALLOWED_ROOTS = tuple(
+    value.strip()
+    for value in os.getenv("LOCAL_FILE_ALLOWED_ROOTS", "").split(os.pathsep)
+    if value.strip()
+)

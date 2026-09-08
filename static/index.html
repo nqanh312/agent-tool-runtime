@@ -15,6 +15,7 @@
         <input id="loginUsername" autocomplete="username" placeholder="Tên đăng nhập" required>
         <input id="loginPassword" type="password" autocomplete="current-password" placeholder="Mật khẩu" required>
         <div class="error" id="loginError"></div><button class="btn primary" type="submit">Đăng nhập</button>
+        <button class="btn" id="googleLoginButton" type="button">Continue with Google</button>
     </form>
 </section>
 
@@ -47,7 +48,7 @@
     <form class="form card" id="createUserForm"><input id="newUsername" placeholder="Username" required><input id="newDisplayName" placeholder="Tên hiển thị"><select id="newRole"><option value="user">user</option><option value="guest">guest</option><option value="admin">admin</option></select><button class="btn primary">Tạo tài khoản</button><div class="success" id="temporaryPassword"></div></form>
     <div id="userList"></div>
 </section>
-<section class="panel hidden" id="profilePanel"><div class="panel-head"><h2>Tài khoản</h2><button class="btn" onclick="closePanel('profilePanel')">Đóng</button></div><div id="profileInfo" class="card"></div><form class="form card" id="changePasswordForm"><h3>Đổi mật khẩu</h3><input id="currentPassword" type="password" placeholder="Mật khẩu hiện tại" required><input id="newPassword" type="password" minlength="12" maxlength="128" placeholder="Mật khẩu mới (ít nhất 12 ký tự)" required><button class="btn primary">Đổi mật khẩu</button><div class="error" id="passwordError"></div></form></section>
+<section class="panel hidden" id="profilePanel"><div class="panel-head"><h2>Tài khoản</h2><button class="btn" onclick="closePanel('profilePanel')">Đóng</button></div><div id="profileInfo" class="card"></div><div id="driveConnection" class="card"></div><form class="form card" id="changePasswordForm"><h3>Đổi mật khẩu</h3><input id="currentPassword" type="password" placeholder="Mật khẩu hiện tại" required><input id="newPassword" type="password" minlength="12" maxlength="128" placeholder="Mật khẩu mới (ít nhất 12 ký tự)" required><button class="btn primary">Đổi mật khẩu</button><div class="error" id="passwordError"></div></form></section>
 <section class="modal hidden" id="forcedChange"><form class="modal-card form" id="forcedChangeForm"><h2>Đổi mật khẩu tạm</h2><div class="muted">Bạn phải đặt mật khẩu mới trước khi sử dụng ứng dụng.</div><input id="forcedPassword" type="password" minlength="12" maxlength="128" placeholder="Mật khẩu mới" required><input id="forcedConfirmation" type="password" placeholder="Nhập lại mật khẩu" required><div class="error" id="forcedError"></div><button class="btn primary">Hoàn tất</button></form></section>
 
 <script>
@@ -83,7 +84,14 @@ async function loadUsers(){const data=await apiFetch('/api/admin/users?limit=100
 async function updateUser(id,changes){try{await apiFetch('/api/admin/users/'+encodeURIComponent(id),{method:'PATCH',body:JSON.stringify(changes)});await loadUsers()}catch(error){alert(error.message)}}
 async function resetPassword(id){if(!confirm('Reset mật khẩu tài khoản này?'))return;try{const data=await apiFetch(`/api/admin/users/${encodeURIComponent(id)}/reset-password`,{method:'POST'});alert('Mật khẩu tạm (chỉ hiển thị lần này):\n'+data.temporary_password);await loadUsers()}catch(error){alert(error.message)}}
 el('createUserForm').onsubmit=async event=>{event.preventDefault();try{const data=await apiFetch('/api/admin/users',{method:'POST',body:JSON.stringify({username:el('newUsername').value,display_name:el('newDisplayName').value,role:el('newRole').value})});el('temporaryPassword').textContent='Mật khẩu tạm (chỉ hiển thị lần này):\n'+data.temporary_password;el('newUsername').value='';el('newDisplayName').value='';await loadUsers()}catch(error){el('temporaryPassword').textContent=error.message}}
-(async()=>{if(await refreshAccess())await startApp();else showLogin()})();
+el('googleLoginButton').onclick=()=>location.assign('/api/auth/google/start');
+async function loadDriveStatus(){const root=el('driveConnection');if(!hasPermission('drive:read')){root.textContent='Google Drive is unavailable for this role.';return}try{const status=await apiFetch('/api/integrations/google-drive/status');root.replaceChildren();const title=document.createElement('div');title.className='card-title';title.textContent='Google Drive';const detail=document.createElement('div');detail.className='muted';detail.textContent=status.connected?`Connected as ${status.email}`:status.configured?'Not connected':'Google OAuth is not configured';const button=document.createElement('button');button.className='btn';button.style.marginTop='10px';button.textContent=status.connected?'Disconnect':'Connect Drive';button.disabled=!status.configured;button.onclick=status.connected?disconnectDrive:connectDrive;root.append(title,detail,button)}catch(error){root.textContent=error.message}}
+async function connectDrive(){try{const data=await apiFetch('/api/integrations/google-drive/authorize',{method:'POST'});location.assign(data.authorization_url)}catch(error){alert(error.message)}}
+async function disconnectDrive(){if(!confirm('Disconnect Google Drive?'))return;try{await apiFetch('/api/integrations/google-drive/disconnect',{method:'POST'});await loadDriveStatus()}catch(error){alert(error.message)}}
+const applySessionBase=applySession;applySession=data=>{applySessionBase(data);el('changePasswordForm').classList.toggle('hidden',!currentUser.has_password)};
+const startAppBase=startApp;startApp=async()=>{await startAppBase();await loadDriveStatus()};
+const openProfileBase=openProfile;openProfile=()=>{openProfileBase();loadDriveStatus()};
+(async()=>{const oauth=new URLSearchParams(location.search).get('oauth');if(oauth==='error')el('loginError').textContent='Google authorization failed or was cancelled.';if(location.search)history.replaceState({},'',location.pathname);if(await refreshAccess())await startApp();else showLogin()})();
 </script>
 </body>
 </html>

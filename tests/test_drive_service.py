@@ -66,7 +66,9 @@ class ListFilesTests(unittest.TestCase):
         fake_service = _FakeDriveService()
 
         with patch.object(drive_service, "_get_service", return_value=fake_service):
-            files = drive_service.list_files(folder_id="folder_123", page_size=50)
+            files = drive_service.list_files(
+                user_id="user-1", folder_id="folder_123", page_size=50
+            )
 
         self.assertEqual([item["id"] for item in files], ["file-1", "file-2"])
         self.assertEqual(files[1]["size"], "unknown")
@@ -85,13 +87,16 @@ class ListFilesTests(unittest.TestCase):
 
     def test_rejects_invalid_folder_id(self):
         with self.assertRaisesRegex(ValueError, "Drive folder ID"):
-            drive_service.list_files(folder_id="folder' or trashed = true")
+            drive_service.list_files(
+                user_id="user-1", folder_id="folder' or trashed = true"
+            )
 
     def test_accepts_drive_folder_url(self):
         fake_service = _FakeDriveService()
 
         with patch.object(drive_service, "_get_service", return_value=fake_service):
             drive_service.list_files(
+                user_id="user-1",
                 folder_id="https://drive.google.com/drive/folders/folder_123?usp=sharing"
             )
 
@@ -102,21 +107,35 @@ class ListFilesTests(unittest.TestCase):
 
     def test_rejects_page_size_outside_drive_limits(self):
         with self.assertRaisesRegex(ValueError, "between 1 and 1000"):
-            drive_service.list_files(page_size=1001)
+            drive_service.list_files(user_id="user-1", page_size=1001)
 
     def test_reuses_cached_folder_listing(self):
         fake_service = _FakeDriveService()
         with patch.object(drive_service, "_get_service", return_value=fake_service):
-            first = drive_service.list_files(folder_id="folder_cached")
-            second = drive_service.list_files(folder_id="folder_cached")
+            first = drive_service.list_files(
+                user_id="user-1", folder_id="folder_cached"
+            )
+            second = drive_service.list_files(
+                user_id="user-1", folder_id="folder_cached"
+            )
 
         self.assertEqual(first, second)
         self.assertEqual(len(fake_service.files_resource.calls), 2)
 
+    def test_cache_is_isolated_by_authenticated_user(self):
+        fake_service = _FakeDriveService()
+        with patch.object(drive_service, "_get_service", return_value=fake_service):
+            drive_service.list_files(user_id="user-1", folder_id="shared")
+            drive_service.list_files(user_id="user-2", folder_id="shared")
+            drive_service.list_files(user_id="user-1", folder_id="shared")
+
+        # Each uncached listing has two pages; user-1's repeated call is cached.
+        self.assertEqual(len(fake_service.files_resource.calls), 4)
+
     def test_searches_file_names_without_listing_folders(self):
         fake_service = _FakeDriveService()
         with patch.object(drive_service, "_get_service", return_value=fake_service):
-            files = drive_service.search_files("Drive Agent")
+            files = drive_service.search_files("user-1", "Drive Agent")
 
         self.assertEqual(len(files), 2)
         query = fake_service.files_resource.calls[0]["q"]
@@ -134,7 +153,9 @@ class ListFilesTests(unittest.TestCase):
         ) as list_files:
             result = google_drive.list_drive_files(folder_id="folder_123")
 
-        list_files.assert_called_once_with(folder_id="folder_123")
+        list_files.assert_called_once_with(
+            user_id="anonymous", folder_id="folder_123"
+        )
         self.assertEqual(
             result,
             {"total_files": 1, "files": expected_files},
@@ -149,7 +170,9 @@ class ListFilesTests(unittest.TestCase):
         ) as search_files:
             result = google_drive.search_drive_files("Assignment")
 
-        search_files.assert_called_once_with(query="Assignment")
+        search_files.assert_called_once_with(
+            user_id="anonymous", query="Assignment"
+        )
         self.assertEqual(
             result,
             {

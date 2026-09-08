@@ -9,11 +9,16 @@ import uuid
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 from agent import Agent
-from config import AUTH_COOKIE_SECURE, CORS_ORIGINS, JWT_REFRESH_DAYS
+from config import (
+    AUTH_COOKIE_SECURE,
+    CORS_ORIGINS,
+    GOOGLE_OAUTH_STATE_MINUTES,
+    JWT_REFRESH_DAYS,
+)
 from services.auth import (
     AuthenticationError,
     AuthConfigurationError,
@@ -29,6 +34,12 @@ from services.auth import (
 from services.audit_logs import audit_log_repository
 from services.chat_renderer import render_chat_markdown
 from services.conversations import ConversationNotFoundError, conversation_repository
+from services.drive_service import clear_drive_cache
+from services.google_oauth import (
+    GoogleOAuthConfigurationError,
+    GoogleOAuthError,
+    google_oauth_service,
+)
 from services.vectorstore import list_all_memories
 
 
@@ -42,6 +53,7 @@ app.add_middleware(
 )
 
 REFRESH_COOKIE = "agent_refresh"
+GOOGLE_OAUTH_BINDING_COOKIE = "google_oauth_binding"
 sessions: dict[str, Agent] = {}
 conversation_locks: dict[str, threading.Lock] = {}
 conversation_locks_guard = threading.Lock()
@@ -65,6 +77,26 @@ def _set_refresh_cookie(response: Response, token: str) -> None:
 
 def _clear_refresh_cookie(response: Response) -> None:
     response.delete_cookie(REFRESH_COOKIE, path="/api/auth", samesite="strict")
+
+
+def _set_google_oauth_binding(response: Response, value: str) -> None:
+    response.set_cookie(
+        GOOGLE_OAUTH_BINDING_COOKIE,
+        value,
+        max_age=GOOGLE_OAUTH_STATE_MINUTES * 60,
+        httponly=True,
+        secure=AUTH_COOKIE_SECURE,
+        samesite="lax",
+        path="/api/auth/google/callback",
+    )
+
+
+def _clear_google_oauth_binding(response: Response) -> None:
+    response.delete_cookie(
+        GOOGLE_OAUTH_BINDING_COOKIE,
+        path="/api/auth/google/callback",
+        samesite="lax",
+    )
 
 
 def _bearer_token(request: Request) -> str:
@@ -146,6 +178,9 @@ def _get_conversation_agent(
             last_artifact=artifact,
             audit_sink=_audit_sink(f"conversation:{conversation_id}"),
         )
+    else:
+        # Cached agents must never retain permissions from an older role/token.
+        sessions[key].principal = dict(user)
     return sessions[key]
 
 
@@ -261,7 +296,8 @@ def _public_user(user: dict) -> dict:
         key: user[key]
         for key in (
             "user_id", "username", "display_name", "role", "is_active",
-            "must_change_password", "permissions", "created_at", "updated_at",
+            "must_change_password", "has_password", "permissions",
+            "created_at", "updated_at",
         )
         if key in user
     }
@@ -275,6 +311,109 @@ def _session_response(issued) -> dict:
         "password_change_required": False,
         "user": _public_user(issued.user),
     }
+
+
+@app.get("/api/auth/google/start")
+def google_login_start(request: Request):
+    """Start Google OIDC login without requesting Drive access."""
+    try:
+        login_rate_limiter.check(f"google:{_client_ip(request)}")
+        authorization = google_oauth_service.begin(mode="login")
+        response = RedirectResponse(
+            authorization["authorization_url"], status_code=302
+        )
+        _set_google_oauth_binding(response, authorization["browser_binding"])
+        return response
+    except GoogleOAuthConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+
+
+@app.get("/api/auth/google/callback")
+def google_oauth_callback(
+    request: Request,
+    state: str = "",
+    code: str = "",
+    error: str | None = None,
+):
+    """Consume one OAuth transaction and return to the SPA without URL tokens."""
+    destination = "/?oauth=connected"
+    try:
+        if error or not state or not code:
+            raise GoogleOAuthError("Google authorization was cancelled")
+        result = google_oauth_service.complete(
+            raw_state=state,
+            code=code,
+            browser_binding=request.cookies.get(GOOGLE_OAUTH_BINDING_COOKIE, ""),
+        )
+        user = result["user"]
+        if result["mode"] == "login":
+            issued = auth_service.issue_session(
+                user,
+                ip_address=_client_ip(request),
+                user_agent=request.headers.get("User-Agent", ""),
+            )
+            response = RedirectResponse(destination, status_code=303)
+            _set_refresh_cookie(response, issued.refresh_token)
+            auth_repository.log_event(
+                "google_login",
+                "success",
+                actor_user_id=user["user_id"],
+                ip_address=_client_ip(request),
+            )
+        else:
+            response = RedirectResponse("/?drive=connected", status_code=303)
+            auth_repository.log_event(
+                "google_drive_connect",
+                "success",
+                actor_user_id=user["user_id"],
+                ip_address=_client_ip(request),
+            )
+    except (GoogleOAuthError, AuthenticationError, ValueError):
+        response = RedirectResponse("/?oauth=error", status_code=303)
+    _clear_google_oauth_binding(response)
+    return response
+
+
+@app.post("/api/integrations/google-drive/authorize")
+def authorize_google_drive(
+    response: Response,
+    user: dict = Depends(require_permissions("drive:read")),
+):
+    """Create a user-bound Drive consent transaction."""
+    try:
+        authorization = google_oauth_service.begin(
+            mode="drive", user_id=user["user_id"]
+        )
+        _set_google_oauth_binding(response, authorization["browser_binding"])
+        return {"authorization_url": authorization["authorization_url"]}
+    except GoogleOAuthConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/api/integrations/google-drive/status")
+def google_drive_status(
+    user: dict = Depends(require_permissions("drive:read")),
+):
+    return google_oauth_service.status(user["user_id"])
+
+
+@app.post("/api/integrations/google-drive/disconnect")
+def disconnect_google_drive(
+    request: Request,
+    user: dict = Depends(require_permissions("drive:read")),
+):
+    disconnected = google_oauth_service.disconnect(user["user_id"])
+    clear_drive_cache(user["user_id"])
+    if disconnected:
+        auth_repository.log_event(
+            "google_drive_disconnect",
+            "success",
+            actor_user_id=user["user_id"],
+            ip_address=_client_ip(request),
+        )
+    return {"connected": False}
 
 
 @app.post("/api/auth/login")

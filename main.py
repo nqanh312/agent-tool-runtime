@@ -1,11 +1,9 @@
 """Provide an interactive command-line interface for the agent."""
 
 import json
-import getpass
-import secrets
 import sys
 from agent import Agent
-from config import CLI_SERVICE_API_KEY, CLI_USER_ID
+from config import CLI_USER_ID, LOCAL_FILE_ALLOWED_ROOTS
 from services.auth import AuthenticationError, auth_repository
 from services.audit_logs import audit_log_repository
 
@@ -30,11 +28,6 @@ def main():
     print("  Capabilities: Google Drive | Read File | RAG Memory")
     print("="*60)
 
-    if not CLI_SERVICE_API_KEY:
-        raise SystemExit("CLI_SERVICE_API_KEY must be configured")
-    supplied_key = getpass.getpass("CLI service API key: ")
-    if not secrets.compare_digest(supplied_key, CLI_SERVICE_API_KEY):
-        raise SystemExit("Invalid CLI service API key")
     context_id = "cli:default"
     try:
         principal = auth_repository.principal(CLI_USER_ID)
@@ -44,6 +37,7 @@ def main():
     agent = Agent(
         principal=principal,
         audit_sink=lambda entry: audit_log_repository.append(context_id, entry),
+        include_local_file_tools=bool(LOCAL_FILE_ALLOWED_ROOTS),
     )
 
     print_help()

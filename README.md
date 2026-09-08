@@ -15,7 +15,7 @@ The project explores a practical question: **how can an AI agent use external ca
 - Runtime provider selection for Anthropic, OpenAI, and FCI/FPT Cloud.
 - Central registry for tool definitions and invocation.
 - Six-stage execution pipeline for validation, authentication, authorization, rate limiting, execution, and auditing.
-- Read-only Google Drive integration through a service account.
+- Per-user read-only Google Drive integration through OAuth 2.0.
 - Document conversion for PDF, DOCX, XLS/XLSX, PPTX, HTML, and text formats using MarkItDown.
 - FCI-based extraction of explicit user facts and preferences into structured current-state memory before the chat model runs.
 - FCI turn routing that selects RAG, Drive browsing, Drive reading, artifact saving, or general chat in the same classification call.
@@ -82,7 +82,7 @@ This separation keeps model reasoning, policy enforcement, and external service 
 - An API key for the selected model provider (Anthropic, OpenAI, or FCI)
 - An API key authorized for the selected OpenAI or FCI embedding model
 - Docker Desktop or accessible PostgreSQL and Qdrant instances
-- A Google Cloud service account for Google Drive integration
+- A Google Cloud Web OAuth client for Google login and per-user Drive access
 
 ## Getting started
 
@@ -154,15 +154,23 @@ JWT_PASSWORD_CHANGE_MINUTES=10
 AUTH_COOKIE_SECURE=false
 CORS_ORIGINS=http://localhost:9004
 
-# Local CLI only; it is never accepted by the HTTP API.
-CLI_SERVICE_API_KEY=replace_with_a_random_cli_secret
+# Existing application user whose tenant and permissions the local CLI uses.
 CLI_USER_ID=user_admin
 
-GOOGLE_SERVICE_ACCOUNT_FILE=credentials.json
-GOOGLE_DRIVE_FOLDER_ID=your_google_drive_folder_id
+GOOGLE_OAUTH_CLIENT_ID=your_web_oauth_client_id
+GOOGLE_OAUTH_CLIENT_SECRET=your_web_oauth_client_secret
+GOOGLE_OAUTH_REDIRECT_URI=http://localhost:9004/api/auth/google/callback
+GOOGLE_OAUTH_DRIVE_SCOPES=https://www.googleapis.com/auth/drive.readonly
+GOOGLE_OAUTH_ALLOWED_DOMAIN=
+GOOGLE_TOKEN_ENCRYPTION_KEY=replace_with_a_fernet_key
+GOOGLE_OAUTH_STATE_MINUTES=10
+LOCAL_FILE_ALLOWED_ROOTS=D:\Documents\AgentUploads
 ```
 
-`GOOGLE_DRIVE_FOLDER_ID` is optional. Leave it empty to list every file accessible to the service account.
+Google authentication requests only `openid email profile`. Drive consent is a
+separate, authenticated action and the encrypted offline grant is owned by the
+application `user_id`. The runtime uses Google's stable `sub` claim for identity;
+it never merges accounts by email.
 
 For Qdrant Cloud, set `QDRANT_URL` and `QDRANT_API_KEY` instead of the local host/port. Memory is partitioned by the authenticated registry user. Facts and preferences up to the configured token limit remain intact. Documents are parsed into Markdown headings, paragraphs, lists, tables, and fenced code blocks; blocks are packed into token-limited chunks with overlap, and only oversized blocks are hard-split. Retrieval performs dense and indexed BM25 sparse searches in Qdrant, scopes IDF statistics to the authenticated user, and fuses candidates server-side with reciprocal-rank fusion.
 
@@ -207,7 +215,7 @@ never exposed to the chat model. Both paths share the same chunking, embedding, 
 Qdrant persistence implementation.
 
 > [!WARNING]
-> Never commit `.env`, API keys, or service-account credentials. The default `.gitignore` excludes these files.
+> Never commit `.env`, OAuth client secrets, encryption keys, or refresh tokens. The default `.gitignore` excludes local secret files.
 
 ### 4. Start PostgreSQL, Qdrant, and apply migrations
 
@@ -259,16 +267,28 @@ docker compose logs qdrant
 
 1. Create a project in Google Cloud Console.
 2. Enable the Google Drive API.
-3. Create a service account and download its JSON key.
-4. Set the key path with `GOOGLE_SERVICE_ACCOUNT_FILE`.
-5. Share the target Drive folder with the service account email.
-6. Set `GOOGLE_DRIVE_FOLDER_ID` if access should default to one folder.
+3. Configure the OAuth consent screen.
+4. Create an OAuth client of type **Web application**.
+5. Add `http://localhost:9004/api/auth/google/callback` as an authorized redirect URI.
+6. Set `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, and the exact redirect URI.
+7. Generate an independent Fernet key for `GOOGLE_TOKEN_ENCRYPTION_KEY`:
 
-The integration requests only the `https://www.googleapis.com/auth/drive.readonly` scope.
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+The current list/search-all-Drive experience requires the restricted
+`drive.readonly` scope. For a public application, prefer `drive.file` together with
+Google Picker and complete Google's verification requirements before deployment.
+The service-account credential path is no longer used for personal Drive access.
 
 ## Usage
 
 ### Command-line interface
+
+Set `CLI_USER_ID` to an existing application user. This value selects the
+tenant and permissions for the local process; it is not an authentication
+credential. Only run the CLI on a trusted machine.
 
 ```bash
 python main.py
@@ -295,10 +315,15 @@ Open [http://localhost:9004](http://localhost:9004). The health endpoint is avai
 | Method | Endpoint | Description |
 | --- | --- | --- |
 | `POST` | `/api/auth/login` | Authenticate and receive an access token |
+| `GET` | `/api/auth/google/start` | Start Google OIDC login |
+| `GET` | `/api/auth/google/callback` | Complete a one-time OAuth transaction |
 | `POST` | `/api/auth/refresh` | Rotate the HttpOnly refresh token |
 | `POST` | `/api/auth/logout` | Revoke the current refresh session |
 | `GET` | `/api/auth/me` | Read the authenticated user and permissions |
 | `POST` | `/api/auth/change-password` | Change the current user's password |
+| `POST` | `/api/integrations/google-drive/authorize` | Start per-user Drive consent |
+| `GET` | `/api/integrations/google-drive/status` | Read the current user's Drive connection state |
+| `POST` | `/api/integrations/google-drive/disconnect` | Delete and revoke the user's Drive grant |
 | `GET/POST/PATCH` | `/api/admin/users...` | Manage users; requires `users:manage` |
 | `POST` | `/api/chat` | Send a message, creating a conversation when needed |
 | `GET` | `/api/conversations` | List the current user's conversations |
@@ -331,7 +356,8 @@ curl -X POST http://localhost:9004/api/chat \
 | OpenAI-compatible adapter (OpenAI and FCI) | Available |
 | CLI and FastAPI interfaces | Available |
 | Tool registration | Available |
-| Google Drive listing, download, and reading | Available |
+| Per-user Google login and encrypted Drive OAuth | Available |
+| Google Drive listing, download, and reading | Available per connected user |
 | Schema validation | Available |
 | PostgreSQL users and JWT authentication | Available |
 | Fixed-role RBAC for HTTP APIs and tools | Available |
@@ -370,7 +396,9 @@ python -m unittest discover -v
 
 - Do not hard-code or commit credentials.
 - Use a unique high-entropy `JWT_SECRET`, enable secure cookies behind HTTPS, and rotate secrets through deployment configuration.
+- Keep `GOOGLE_TOKEN_ENCRYPTION_KEY` separate from `JWT_SECRET`; rotating it requires re-encrypting stored Drive grants.
+- Google OAuth state is one-time, server-side, PKCE-protected, and bound to an HttpOnly callback cookie.
 - Configure an exact `CORS_ORIGINS` allowlist; wildcard origins are not used with credentials.
 - Keep local Qdrant bound to `127.0.0.1`; use authentication and network controls when exposing it remotely.
 - Keep local PostgreSQL bound to `127.0.0.1`; use TLS and managed credentials when deploying it remotely.
-- Local file access should be sandboxed or allowlisted before use in a multi-user environment.
+- Local path access is disabled for web agents. The CLI registers it only when `LOCAL_FILE_ALLOWED_ROOTS` is set, requires `local_file:read`, canonicalizes the requested path inside an allowed root, and rejects common credential/key files and sensitive directories. Separate multiple Windows roots with `;`.

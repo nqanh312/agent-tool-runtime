@@ -8,6 +8,8 @@ from sqlalchemy import engine_from_config, pool
 from config import DATABASE_URL
 from services.conversations import Base
 from services.audit_logs import AuditBase
+from services.auth import AuthBase
+import services.google_oauth  # noqa: F401 - registers OAuth tables in metadata
 
 
 config = context.config
@@ -15,7 +17,7 @@ config.set_main_option("sqlalchemy.url", DATABASE_URL.replace("%", "%%"))
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-target_metadata = [Base.metadata, AuditBase.metadata]
+target_metadata = [Base.metadata, AuditBase.metadata, AuthBase.metadata]
 
 
 def run_migrations_offline() -> None:

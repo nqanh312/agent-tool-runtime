@@ -1,21 +1,17 @@
-"""List and download files through the Google Drive API."""
+"""List and download files using the authenticated user's Drive grant."""
 
-import io
 import os
 import re
 import tempfile
 import threading
 import time
 from urllib.parse import parse_qs, urlparse
-from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 
-from config import GOOGLE_SERVICE_ACCOUNT_FILE, GOOGLE_DRIVE_FOLDER_ID
+from services.file_reader import MAX_FILE_SIZE_BYTES
+from services.google_oauth import google_oauth_service
 
-SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
-
-_service = None
 _CACHE_TTL_SECONDS = 60
 _cache_lock = threading.Lock()
 _file_cache: dict[tuple, tuple[float, list[dict]]] = {}
@@ -24,10 +20,14 @@ _file_cache: dict[tuple, tuple[float, list[dict]]] = {}
 _DRIVE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
-def clear_drive_cache():
+def clear_drive_cache(user_id: str | None = None):
     """Clear cached file metadata, primarily for explicit refreshes and tests."""
     with _cache_lock:
-        _file_cache.clear()
+        if user_id is None:
+            _file_cache.clear()
+        else:
+            for key in [key for key in _file_cache if key[0] == user_id]:
+                _file_cache.pop(key, None)
 
 
 def _cached(key: tuple) -> list[dict] | None:
@@ -86,22 +86,21 @@ def _normalize_folder_id(folder_reference: str | None) -> str | None:
     )
 
 
-def _get_service():
-    """Create the Drive client lazily and reuse it for later requests."""
-    global _service
-    if _service is None:
-        creds_path = GOOGLE_SERVICE_ACCOUNT_FILE
-        if not os.path.exists(creds_path):
-            raise FileNotFoundError(
-                f"Google Service Account file not found: '{creds_path}'. "
-                f"Download it from Google Cloud Console and place it in the project root."
-            )
-        creds = service_account.Credentials.from_service_account_file(creds_path, scopes=SCOPES)
-        _service = build("drive", "v3", credentials=creds)
-    return _service
+def _get_service(user_id: str):
+    """Build a Drive client from the requesting user's encrypted OAuth grant."""
+    if not user_id:
+        raise ValueError("Authenticated user_id is required for Google Drive")
+    credentials = google_oauth_service.credentials_for_user(user_id)
+    return build(
+        "drive", "v3", credentials=credentials, cache_discovery=False
+    )
 
 
-def list_files(folder_id: str | None = None, page_size: int = 100) -> list[dict]:
+def list_files(
+    user_id: str,
+    folder_id: str | None = None,
+    page_size: int = 100,
+) -> list[dict]:
     """List every accessible Drive file, optionally within a folder.
 
     ``page_size`` controls the number of items requested per API call, not the
@@ -113,15 +112,13 @@ def list_files(folder_id: str | None = None, page_size: int = 100) -> list[dict]
     if not 1 <= page_size <= 1000:
         raise ValueError("page_size must be between 1 and 1000")
 
-    effective_folder_id = _normalize_folder_id(
-        folder_id or GOOGLE_DRIVE_FOLDER_ID or None
-    )
-    cache_key = ("list", effective_folder_id, page_size)
+    effective_folder_id = _normalize_folder_id(folder_id)
+    cache_key = (user_id, "list", effective_folder_id, page_size)
     cached = _cached(cache_key)
     if cached is not None:
         return cached
 
-    service = _get_service()
+    service = _get_service(user_id)
 
     query_parts = ["trashed = false"]
     if effective_folder_id:
@@ -151,7 +148,7 @@ def list_files(folder_id: str | None = None, page_size: int = 100) -> list[dict]
     return _store_cache(cache_key, _normalize_files(files))
 
 
-def search_files(query: str, page_size: int = 100) -> list[dict]:
+def search_files(user_id: str, query: str, page_size: int = 100) -> list[dict]:
     """Search accessible Drive file names without recursively listing folders."""
     if isinstance(page_size, bool) or not isinstance(page_size, int):
         raise TypeError("page_size must be an integer")
@@ -163,7 +160,7 @@ def search_files(query: str, page_size: int = 100) -> list[dict]:
         raise ValueError("A non-empty Drive file search query is required")
 
     normalized_query = " ".join(terms).casefold()
-    cache_key = ("search", normalized_query, page_size)
+    cache_key = (user_id, "search", normalized_query, page_size)
     cached = _cached(cache_key)
     if cached is not None:
         return cached
@@ -175,7 +172,7 @@ def search_files(query: str, page_size: int = 100) -> list[dict]:
         f"name contains '{escaped(term)}'" for term in terms
     )
     drive_query = f"trashed = false and ({name_conditions})"
-    service = _get_service()
+    service = _get_service(user_id)
     files: list[dict] = []
     page_token = None
     while True:
@@ -196,13 +193,27 @@ def search_files(query: str, page_size: int = 100) -> list[dict]:
     return _store_cache(cache_key, _normalize_files(files))
 
 
-def download_file(file_id: str) -> dict:
+def download_file(user_id: str, file_id: str) -> dict:
     """Download a file from Google Drive to a temp file. Returns metadata and temp path."""
-    service = _get_service()
+    if not isinstance(file_id, str) or not _DRIVE_ID_PATTERN.fullmatch(file_id.strip()):
+        raise ValueError("Invalid Google Drive file ID")
+    service = _get_service(user_id)
 
-    file_meta = service.files().get(fileId=file_id, fields="name, mimeType").execute()
+    file_meta = service.files().get(
+        fileId=file_id,
+        fields="name,mimeType,size,capabilities(canDownload)",
+        supportsAllDrives=True,
+    ).execute()
     mime_type = file_meta.get("mimeType", "")
     file_name = file_meta.get("name", "")
+    if file_meta.get("capabilities", {}).get("canDownload") is False:
+        raise PermissionError("Google Drive does not allow downloading this file")
+    declared_size = int(file_meta.get("size") or 0)
+    if declared_size > MAX_FILE_SIZE_BYTES:
+        raise ValueError(
+            f"File is too large ({declared_size} bytes); "
+            f"maximum is {MAX_FILE_SIZE_BYTES} bytes"
+        )
 
     # Export Google-native files to formats supported by the file reader.
     export_map = {
@@ -215,18 +226,27 @@ def download_file(file_id: str) -> dict:
         export_mime, ext = export_map[mime_type]
         request = service.files().export_media(fileId=file_id, mimeType=export_mime)
     else:
-        request = service.files().get_media(fileId=file_id)
+        request = service.files().get_media(
+            fileId=file_id, supportsAllDrives=True
+        )
         ext = os.path.splitext(file_name)[1] or ".bin"
 
-    buffer = io.BytesIO()
-    downloader = MediaIoBaseDownload(buffer, request)
-    done = False
-    while not done:
-        _, done = downloader.next_chunk()
-
-    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-        tmp.write(buffer.getvalue())
-        tmp_path = tmp.name
+    tmp_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+            tmp_path = tmp.name
+            downloader = MediaIoBaseDownload(tmp, request)
+            done = False
+            while not done:
+                _, done = downloader.next_chunk()
+                if tmp.tell() > MAX_FILE_SIZE_BYTES:
+                    raise ValueError(
+                        f"Downloaded file exceeds the {MAX_FILE_SIZE_BYTES}-byte limit"
+                    )
+    except Exception:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise
 
     return {
         "file_id": file_id,

@@ -7,6 +7,7 @@ qdrant-client>=1.19.0,<2.0.0
 google-api-python-client>=2.100.0
 google-auth>=2.23.0
 google-auth-oauthlib>=1.1.0
+cryptography>=42.0.0
 markitdown[pdf,docx,pptx,xlsx,xls]>=0.1.0
 fastapi>=0.104.0
 uvicorn>=0.24.0

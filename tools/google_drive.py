@@ -3,16 +3,19 @@
 import os
 
 from registry.models import ToolDefinition
+from registry import get_current_user
 from services import drive_service
 from services.file_reader import read_file
 
 
-# List files visible to the configured service account.
+# List files visible to the authenticated user's Google grant.
 
 def list_drive_files(folder_id: str = "") -> dict:
     """List all files in Google Drive."""
     fid = folder_id if folder_id else None
-    files = drive_service.list_files(folder_id=fid)
+    files = drive_service.list_files(
+        user_id=get_current_user()["user_id"], folder_id=fid
+    )
     return {
         "total_files": len(files),
         "files": files,
@@ -43,7 +46,9 @@ list_files_tool = ToolDefinition(
 
 def search_drive_files(query: str) -> dict:
     """Search accessible Google Drive files by name."""
-    files = drive_service.search_files(query=query)
+    files = drive_service.search_files(
+        user_id=get_current_user()["user_id"], query=query
+    )
     return {
         "query": query,
         "total_files": len(files),
@@ -76,7 +81,9 @@ search_files_tool = ToolDefinition(
 
 def get_drive_file(file_id: str) -> dict:
     """Download one Drive file and return its Markdown content."""
-    download = drive_service.download_file(file_id=file_id)
+    download = drive_service.download_file(
+        user_id=get_current_user()["user_id"], file_id=file_id
+    )
     temp_path = download["temp_path"]
     try:
         result = read_file(temp_path)
