@@ -90,6 +90,29 @@ class ServerRenderingTests(unittest.TestCase):
         self.assertIn(server.GOOGLE_OAUTH_BINDING_COOKIE, response.cookies)
         begin.assert_called_once_with(mode="drive", user_id="user-1")
 
+    def test_google_callback_logs_oauth_failure_without_callback_url(self):
+        with (
+            patch.object(
+                server.google_oauth_service,
+                "complete",
+                side_effect=server.GoogleOAuthError("token exchange failed"),
+            ),
+            patch.object(server.logger, "exception") as log_exception,
+        ):
+            response = self.client.get(
+                "/api/auth/google/callback?state=test-state&code=secret-code",
+                follow_redirects=False,
+            )
+
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(response.headers["location"], "/?oauth=error")
+        log_exception.assert_called_once()
+        rendered_log_arguments = " ".join(
+            str(value) for value in log_exception.call_args.args
+        )
+        self.assertIn("token exchange failed", rendered_log_arguments)
+        self.assertNotIn("secret-code", rendered_log_arguments)
+
     def test_cached_agent_receives_current_principal(self):
         conversation_id = str(uuid.uuid4())
         key = server._agent_key("user-1", conversation_id)
@@ -208,10 +231,18 @@ class ServerRenderingTests(unittest.TestCase):
     def test_ui_contains_login_refresh_admin_and_safe_rendering(self):
         body = self.client.get("/").text
         self.assertIn('id="loginForm"', body)
+        self.assertIn('id="loginError" role="alert" aria-live="polite"', body)
         self.assertIn("/api/auth/refresh", body)
+        self.assertIn("Phiên đăng nhập đã hết hạn", body)
+        self.assertIn("Tên đăng nhập hoặc mật khẩu không đúng", body)
         self.assertIn('id="adminPanel"', body)
+        self.assertIn('id="profileButton" onclick="openProfile()">Settings</button>', body)
         self.assertIn('id="googleLoginButton"', body)
         self.assertIn("/api/integrations/google-drive/authorize", body)
+        self.assertIn("AUDIT_STEP_ORDER", body)
+        self.assertIn("renderAuditLog", body)
+        self.assertIn("Authenticate caller", body)
+        self.assertIn("Write audit log", body)
         self.assertIn("node.innerHTML = safeHtml", body)
         self.assertIn("node.textContent = text", body)
 

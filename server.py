@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from dataclasses import dataclass
 import ipaddress
+import logging
 import threading
 import time
 import traceback
@@ -60,6 +61,9 @@ from services.request_limits import ChatLimitExceeded, ChatUsageLimiter
 from services.vectorstore import list_all_memories
 
 
+logger = logging.getLogger(__name__)
+
+
 class RequestBodyLimitMiddleware:
     """Reject oversized HTTP bodies, including chunked requests."""
 
@@ -113,6 +117,7 @@ class _RequestBodyTooLarge(Exception):
     pass
 
 
+# HTTP middleware and process-wide state are initialized once at import time.
 app = FastAPI(title="AI Agent - Assignment 1")
 app.add_middleware(
     RequestBodyLimitMiddleware,
@@ -128,9 +133,13 @@ app.add_middleware(
 
 REFRESH_COOKIE = "agent_refresh"
 GOOGLE_OAUTH_BINDING_COOKIE = "google_oauth_binding"
+# Agents are expensive, stateful objects. Keep an LRU-like cache per user and
+# conversation; every access to these two mappings must hold sessions_guard.
 sessions: dict[str, Agent] = {}
 session_access: OrderedDict[str, float] = OrderedDict()
 sessions_guard = threading.Lock()
+# A separate non-blocking lock prevents two turns from assigning duplicate
+# ordinals or mutating the same cached Agent concurrently.
 conversation_locks: dict[str, threading.Lock] = {}
 conversation_locks_guard = threading.Lock()
 chat_usage_limiter = ChatUsageLimiter(
@@ -151,6 +160,7 @@ conversation_lock_states: dict[str, _ConversationLockState] = {}
 
 
 def _client_ip(request: Request) -> str:
+    """Use a forwarded address only when the direct peer is a trusted proxy."""
     peer = request.client.host if request.client else ""
     if peer not in TRUSTED_PROXY_IPS:
         return peer
@@ -225,6 +235,7 @@ def current_principal(request: Request) -> dict:
 
 
 def require_permissions(*required: str):
+    """Build a FastAPI dependency that requires every named permission."""
     def dependency(user: dict = Depends(current_principal)) -> dict:
         missing = sorted(set(required) - set(user.get("permissions", [])))
         if missing:
@@ -241,6 +252,7 @@ def _audit_sink(context_id: str):
 
 
 def _prune_conversation_locks(now: float) -> None:
+    """Discard only inactive locks, first by TTL and then by cache capacity."""
     expired = [
         key
         for key, state in conversation_lock_states.items()
@@ -267,6 +279,7 @@ def _prune_conversation_locks(now: float) -> None:
 
 
 def _try_acquire_conversation_lock(key: str) -> threading.Lock | None:
+    """Acquire one conversation slot without making a concurrent request wait."""
     now = time.monotonic()
     with conversation_locks_guard:
         _prune_conversation_locks(now)
@@ -283,6 +296,7 @@ def _try_acquire_conversation_lock(key: str) -> threading.Lock | None:
 
 
 def _release_conversation_lock(key: str, lock: threading.Lock) -> None:
+    """Release a conversation slot and make the entry eligible for pruning."""
     lock.release()
     now = time.monotonic()
     with conversation_locks_guard:
@@ -298,6 +312,7 @@ def _agent_key(user_id: str, conversation_id: str) -> str:
 
 
 def _prune_sessions(now: float, protected_key: str | None = None) -> None:
+    """Expire idle agents and enforce the cache cap without evicting a live key."""
     for key in list(session_access):
         if key not in sessions:
             session_access.pop(key, None)
@@ -339,6 +354,7 @@ def _get_conversation_agent(
     before_ordinal: int | None = None,
     force_reload: bool = False,
 ) -> Agent:
+    """Load or rebuild the stateful Agent for an owned conversation."""
     key = _agent_key(user["user_id"], conversation_id)
     now = time.monotonic()
     with sessions_guard:
@@ -560,7 +576,9 @@ def google_oauth_callback(
                 actor_user_id=user["user_id"],
                 ip_address=_client_ip(request),
             )
-    except (GoogleOAuthError, AuthenticationError, ValueError):
+    except (GoogleOAuthError, AuthenticationError, ValueError) as exc:
+        # Do not log the callback URL because it contains a one-time OAuth code.
+        logger.exception("Google OAuth callback failed: %s", exc)
         response = RedirectResponse("/?oauth=error", status_code=303)
     _clear_google_oauth_binding(response)
     return response
@@ -804,6 +822,7 @@ def chat(
     response: Response,
     user: dict = Depends(require_permissions("chat:use", "conversation:write")),
 ):
+    """Run one idempotent, serialized turn and persist both sides of it."""
     try:
         allowance = chat_usage_limiter.check(user["user_id"], req.message)
     except ChatLimitExceeded as exc:
@@ -820,6 +839,8 @@ def chat(
     )
 
     client_message_id = req.client_message_id or str(uuid.uuid4())
+    # New chats lock on the stable retry ID until a conversation ID exists;
+    # existing chats lock directly on their conversation ID.
     lock_key = f"{user['user_id']}:{req.conversation_id or client_message_id}"
     lock = _try_acquire_conversation_lock(lock_key)
     if lock is None:
@@ -828,6 +849,8 @@ def chat(
         conversation = None
         user_message = None
         new_conversation = False
+        # The client may retry after losing the HTTP response. Recover its
+        # durable user message before creating any new state or calling the LLM.
         retried = conversation_repository.find_user_message(user["user_id"], client_message_id)
         if retried is not None:
             user_message, conversation = retried
@@ -852,6 +875,8 @@ def chat(
         else:
             existing_reply = conversation_repository.get_reply(user_message["id"])
             if existing_reply is not None:
+                # Returning the stored reply makes a completed retry free of
+                # duplicate model calls and duplicate assistant messages.
                 return ChatResponse(
                     response=existing_reply["content"],
                     response_html=render_chat_markdown(existing_reply["content"]),
@@ -863,6 +888,8 @@ def chat(
                 conversation_id, user, before_ordinal=user_message["ordinal"], force_reload=True
             )
 
+        # Diffing the audit log associates only this turn's tools with the
+        # assistant message, even when the Agent came from the session cache.
         audit_before = len(agent.get_audit_log())
         answer = agent.run(req.message)
         tools_used = [entry["tool"] for entry in agent.get_audit_log()[audit_before:]]

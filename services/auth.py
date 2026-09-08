@@ -196,6 +196,8 @@ class TokenReuseError(AuthenticationError):
 
 
 _password_hasher = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=4)
+# Unknown usernames still verify against a real hash so login timing does not
+# reveal whether an account exists.
 _dummy_password_hash = _password_hasher.hash("timing-only-password-value")
 
 
@@ -452,6 +454,8 @@ class AuthRepository:
                 and ((role is not None and role != "admin") or is_active is False)
             )
             if removes_active_admin:
+                # Lock all active admins so concurrent updates cannot each
+                # conclude that another administrator will remain.
                 active_admins = list(session.scalars(
                     select(User.id).where(
                         User.role_name == "admin", User.is_active.is_(True)
@@ -467,6 +471,8 @@ class AuthRepository:
                 user.is_active = is_active
                 changed = True
             if changed:
+                # Versioned access tokens plus deleted refresh sessions make a
+                # role/status change take effect immediately on every device.
                 user.token_version += 1
                 user.updated_at = utc_now()
                 session.execute(delete(RefreshSession).where(RefreshSession.user_id == user.id))
@@ -529,6 +535,7 @@ class AuthRepository:
         self, session_id: str, token_hash: str, *, new_session_id: str,
         new_token_hash: str, expires_at: datetime, ip_address: str, user_agent: str,
     ) -> tuple[dict, str]:
+        """Rotate once; replay revokes the entire refresh-token family."""
         now = utc_now()
         reuse_detected = False
         result: tuple[dict, str] | None = None
@@ -540,6 +547,8 @@ class AuthRepository:
             if old_expiry.tzinfo is None:
                 old_expiry = old_expiry.replace(tzinfo=UTC)
             if old.revoked_at is not None or not secrets.compare_digest(old.token_hash, token_hash):
+                # A used or mismatched token may be stolen. Invalidate every
+                # descendant in the family instead of only this one session.
                 session.query(RefreshSession).filter(
                     RefreshSession.family_id == old.family_id
                 ).update({RefreshSession.revoked_at: now})
@@ -560,6 +569,7 @@ class AuthRepository:
                 ))
                 permissions = self._permissions(session, user.role_name)
                 result = (_user_to_dict(user, permissions), old.family_id)
+        # Raise after the transaction exits so replay-family revocation commits.
         if reuse_detected:
             raise TokenReuseError("Refresh token reuse detected")
         if result is None:
@@ -635,10 +645,13 @@ class IssuedSession:
 
 
 class AuthService:
+    """Coordinate password login and short-lived JWT/refresh sessions."""
+
     def __init__(self, repository: AuthRepository):
         self.repository = repository
 
     def authenticate(self, username: str, password: str, *, ip_address: str = "") -> dict:
+        """Verify credentials without exposing account existence through timing."""
         try:
             found = self.repository.get_user_by_username(username)
         except ValueError:
@@ -673,6 +686,7 @@ class AuthService:
         return IssuedSession(access, refresh, JWT_ACCESS_MINUTES * 60, user)
 
     def principal_from_access(self, value: str) -> dict:
+        """Resolve a JWT only while its user and backing refresh session are valid."""
         claims = _decode_token(value, "access")
         user = self.repository.principal(claims["sub"])
         if (
@@ -733,6 +747,8 @@ class AuthService:
 
 
 class LoginRateLimiter:
+    """Apply a process-local sliding-window limit to login attempts."""
+
     def __init__(self, max_attempts: int = 8, window_seconds: int = 300):
         self.max_attempts = max_attempts
         self.window_seconds = window_seconds

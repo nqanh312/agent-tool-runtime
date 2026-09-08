@@ -72,6 +72,19 @@ class GoogleOAuthTests(unittest.TestCase):
         self.config_patch.stop()
         self.engine.dispose()
 
+    def test_login_scopes_use_google_canonical_names(self):
+        scopes = set(self.service._scopes("login"))
+
+        self.assertIn("openid", scopes)
+        self.assertIn(
+            "https://www.googleapis.com/auth/userinfo.email", scopes
+        )
+        self.assertIn(
+            "https://www.googleapis.com/auth/userinfo.profile", scopes
+        )
+        self.assertNotIn("email", scopes)
+        self.assertNotIn("profile", scopes)
+
     def test_external_identity_uses_subject_and_does_not_merge_by_email(self):
         first = self.users.get_or_create_external_user(
             provider="google",

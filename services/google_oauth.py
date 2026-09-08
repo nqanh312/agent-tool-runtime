@@ -32,7 +32,11 @@ from services.conversations import SessionLocal
 
 
 UTC = timezone.utc
-LOGIN_SCOPES = ("openid", "email", "profile")
+LOGIN_SCOPES = (
+    "openid",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/userinfo.profile",
+)
 TOKEN_URI = "https://oauth2.googleapis.com/token"
 REVOKE_URI = "https://oauth2.googleapis.com/revoke"
 
@@ -105,6 +109,8 @@ def _aware(value: datetime) -> datetime:
 
 
 class GoogleOAuthRepository:
+    """Persist single-use OAuth transactions and encrypted Drive grants."""
+
     def __init__(self, session_factory: Callable[[], Session]):
         self.session_factory = session_factory
 
@@ -118,6 +124,7 @@ class GoogleOAuthRepository:
         nonce: str,
         browser_binding: str,
     ) -> None:
+        """Store only hashes of browser-visible transaction secrets."""
         now = utc_now()
         with self.session_factory.begin() as session:
             session.execute(delete(GoogleOAuthState).where(
@@ -134,6 +141,7 @@ class GoogleOAuthRepository:
             ))
 
     def consume_state(self, raw_state: str, browser_binding: str) -> dict:
+        """Atomically validate and delete one OAuth callback transaction."""
         if not browser_binding:
             raise GoogleOAuthError("OAuth browser binding is missing")
         with self.session_factory.begin() as session:
@@ -154,6 +162,7 @@ class GoogleOAuthRepository:
                 "browser_binding_hash": row.browser_binding_hash,
                 "expires_at": row.expires_at,
             }
+            # Deleting inside the locked transaction prevents callback replay.
             session.delete(row)
         if _aware(result["expires_at"]) <= utc_now():
             raise GoogleOAuthError("OAuth state has expired")
@@ -183,6 +192,7 @@ class GoogleOAuthRepository:
         encrypted_refresh_token: str | None,
         scopes: tuple[str, ...],
     ) -> None:
+        """Create or refresh a one-user-to-one-Google-account Drive grant."""
         with self.session_factory.begin() as session:
             owner = session.scalar(select(GoogleDriveConnection.user_id).where(
                 GoogleDriveConnection.google_subject == google_subject,
@@ -231,6 +241,8 @@ class GoogleOAuthRepository:
 
 
 class GoogleOAuthService:
+    """Run OIDC login and incremental Google Drive authorization flows."""
+
     def __init__(
         self,
         repository: GoogleOAuthRepository,
@@ -298,6 +310,7 @@ class GoogleOAuthService:
             ) from exc
 
     def begin(self, *, mode: str, user_id: str | None = None) -> dict:
+        """Create a bound state/nonce/PKCE transaction and authorization URL."""
         self._require_configuration()
         if mode == "drive" and not user_id:
             raise GoogleOAuthError("Authentication is required to connect Drive")
@@ -344,6 +357,7 @@ class GoogleOAuthService:
         code: str,
         browser_binding: str,
     ) -> dict:
+        """Exchange a callback, verify identity claims, and apply its mode."""
         self._require_configuration()
         transaction = self.repository.consume_state(raw_state, browser_binding)
         mode = transaction["mode"]
@@ -372,6 +386,8 @@ class GoogleOAuthService:
             )
         except Exception as exc:
             raise GoogleOAuthError("Google ID token verification failed") from exc
+        # State binds the request, PKCE binds the code exchange, and nonce binds
+        # this verified ID token to the exact transaction that initiated it.
         if claims.get("nonce") != transaction["nonce"]:
             raise GoogleOAuthError("Google ID token nonce did not match")
         if claims.get("email_verified") is not True:
@@ -437,6 +453,7 @@ class GoogleOAuthService:
         }
 
     def credentials_for_user(self, user_id: str) -> oauth_credentials.Credentials:
+        """Build refreshable credentials from the user's encrypted offline grant."""
         self._require_configuration()
         connection = self.repository.get_connection(user_id)
         if connection is None:
@@ -453,6 +470,7 @@ class GoogleOAuthService:
         )
 
     def disconnect(self, user_id: str) -> bool:
+        """Delete the local grant, then best-effort revoke it at Google."""
         connection = self.repository.delete_connection(user_id)
         if connection is None:
             return False

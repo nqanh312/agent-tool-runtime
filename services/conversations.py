@@ -110,11 +110,13 @@ def make_title(message: str, limit: int = 60) -> str:
 
 
 def _encode_cursor(updated_at: datetime, conversation_id: uuid.UUID) -> str:
+    """Encode both fields of the stable keyset-pagination position."""
     raw = f"{updated_at.isoformat()}|{conversation_id}"
     return base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
 
 
 def _decode_cursor(cursor: str) -> tuple[datetime, uuid.UUID]:
+    """Decode and validate a conversation keyset cursor."""
     try:
         padded = cursor + "=" * (-len(cursor) % 4)
         raw = base64.urlsafe_b64decode(padded.encode()).decode()
@@ -227,11 +229,14 @@ class ConversationRepository:
         limit: int = 30,
         cursor: str | None = None,
     ) -> tuple[list[dict], str | None]:
+        """Page newest-first using (updated_at, id) as a deterministic key."""
         safe_limit = min(max(limit, 1), 100)
         with self.session_factory() as session:
             query = select(Conversation).where(Conversation.user_id == user_id)
             if cursor:
                 cursor_time, cursor_id = _decode_cursor(cursor)
+                # The UUID tie-breaker prevents skips when conversations share
+                # the same database timestamp.
                 query = query.where(
                     or_(
                         Conversation.updated_at < cursor_time,
@@ -263,6 +268,7 @@ class ConversationRepository:
         limit: int = 50,
         before: int | None = None,
     ) -> tuple[list[dict], int | None]:
+        """Page backwards by ordinal but return each page chronologically."""
         conversation = self.get_conversation(conversation_id, user_id)
         identifier = uuid.UUID(conversation["id"])
         safe_limit = min(max(limit, 1), 200)
@@ -290,6 +296,7 @@ class ConversationRepository:
         *,
         before_ordinal: int | None = None,
     ) -> list[dict]:
+        """Collect bounded chronological history for reconstructing an Agent."""
         messages, before = self.list_messages(
             conversation_id,
             user_id,
@@ -310,8 +317,10 @@ class ConversationRepository:
         content: str,
         client_message_id: str,
     ) -> tuple[dict, bool]:
+        """Append once per client ID while serializing ordinal allocation."""
         identifier = uuid.UUID(conversation_id)
         with self.session_factory.begin() as session:
+            # The parent-row lock makes max(ordinal) + 1 safe across workers.
             conversation = session.scalar(
                 select(Conversation)
                 .where(
@@ -387,6 +396,7 @@ class ConversationRepository:
         tools_used: list[str],
         reply_to_message_id: str,
     ) -> dict:
+        """Store at most one assistant reply for a durable user message."""
         identifier = uuid.UUID(conversation_id)
         reply_identifier = uuid.UUID(reply_to_message_id)
         with self.session_factory.begin() as session:
@@ -406,6 +416,8 @@ class ConversationRepository:
                 )
             )
             if existing is not None:
+                # reply_to_message_id is unique, so HTTP retries reuse the
+                # original answer rather than writing a second one.
                 return message_to_dict(existing)
             next_ordinal = (
                 session.scalar(
