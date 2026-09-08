@@ -6,12 +6,15 @@ import math
 import re
 import threading
 import uuid
+import weakref
+import zlib
 
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
 
 from config import (
     EMBEDDING_DIM,
+    MEMORY_BM25_AVG_LEN,
     MEMORY_COLLECTION,
     QDRANT_API_KEY,
     QDRANT_HOST,
@@ -20,8 +23,24 @@ from config import (
 )
 
 
+BM25_VECTOR_NAME = "bm25"
 _collection_lock = threading.Lock()
+_ready_clients: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 _TOKEN_RE = re.compile(r"\w+", re.UNICODE)
+_BM25_K = 1.5
+_BM25_B = 0.75
+if MEMORY_BM25_AVG_LEN <= 0:
+    raise ValueError("MEMORY_BM25_AVG_LEN must be positive")
+_PAYLOAD_INDEXES = {
+    "metadata.user_id": models.KeywordIndexParams(
+        type=models.KeywordIndexType.KEYWORD,
+        is_tenant=True,
+    ),
+    "metadata.category": models.PayloadSchemaType.KEYWORD,
+    "metadata.active": models.PayloadSchemaType.BOOL,
+    "metadata.memory_type": models.PayloadSchemaType.KEYWORD,
+    "metadata.source_id": models.PayloadSchemaType.KEYWORD,
+}
 
 
 @lru_cache(maxsize=1)
@@ -35,25 +54,77 @@ def _get_client() -> QdrantClient:
 def _payload_filter(
     user_id: str | None,
     categories: set[str] | None = None,
-):
-    conditions = []
+    *,
+    current_only: bool = True,
+) -> models.Filter | None:
+    must = []
+    must_not = []
     if user_id:
-        conditions.append(
+        must.append(
             models.FieldCondition(
                 key="metadata.user_id",
                 match=models.MatchValue(value=user_id),
             )
         )
     if categories:
-        conditions.append(
+        must.append(
             models.FieldCondition(
                 key="metadata.category",
                 match=models.MatchAny(any=sorted(categories)),
             )
         )
-    if not conditions:
+    if current_only:
+        # Missing `active` is treated as true during a rolling migration.
+        must_not.append(
+            models.FieldCondition(
+                key="metadata.active",
+                match=models.MatchValue(value=False),
+            )
+        )
+    if not must and not must_not:
         return None
-    return models.Filter(must=conditions)
+    return models.Filter(must=must or None, must_not=must_not or None)
+
+
+def _tokenize(text: str) -> list[str]:
+    return _TOKEN_RE.findall(text.casefold())
+
+
+def _token_id(token: str) -> int:
+    """Map a Unicode token to a stable unsigned sparse-vector dimension."""
+    return zlib.crc32(token.encode("utf-8"))
+
+
+def _bm25_document(text: str) -> models.SparseVector:
+    """Encode the document-side term-frequency component of BM25."""
+    tokens = _tokenize(text)
+    frequencies = Counter(tokens)
+    document_length = len(tokens)
+    denominator_length = 1 - _BM25_B + (
+        _BM25_B * document_length / MEMORY_BM25_AVG_LEN
+    )
+    encoded = {}
+    for token, frequency in frequencies.items():
+        token_id = _token_id(token)
+        value = frequency * (_BM25_K + 1)
+        value /= frequency + _BM25_K * denominator_length
+        # Hash collisions are rare; summing is deterministic and prevents one
+        # colliding term from silently replacing another.
+        encoded[token_id] = encoded.get(token_id, 0.0) + value
+    indices = sorted(encoded)
+    return models.SparseVector(
+        indices=indices,
+        values=[encoded[index] for index in indices],
+    )
+
+
+def _bm25_query(text: str) -> models.SparseVector:
+    """Encode a BM25 query; Qdrant supplies tenant-scoped IDF weights."""
+    indices = sorted({_token_id(token) for token in _tokenize(text)})
+    return models.SparseVector(
+        indices=indices,
+        values=[1.0] * len(indices),
+    )
 
 
 def _normalize_point(point, score: float | None = None) -> dict:
@@ -68,10 +139,28 @@ def _normalize_point(point, score: float | None = None) -> dict:
     return result
 
 
-def ensure_collection():
-    """Ensure the Qdrant collection exists."""
+def _validate_collection(info) -> None:
+    dense = info.config.params.vectors
+    if not isinstance(dense, models.VectorParams) or dense.size != EMBEDDING_DIM:
+        raise RuntimeError(
+            f"Collection {MEMORY_COLLECTION!r} has an incompatible dense-vector "
+            f"schema; expected one unnamed vector with size {EMBEDDING_DIM}."
+        )
+    sparse = info.config.params.sparse_vectors or {}
+    bm25 = sparse.get(BM25_VECTOR_NAME)
+    if bm25 is not None and bm25.modifier != models.Modifier.IDF:
+        raise RuntimeError(
+            f"Sparse vector {BM25_VECTOR_NAME!r} must use the IDF modifier."
+        )
+
+
+def ensure_collection() -> QdrantClient:
+    """Ensure the hybrid collection schema and payload indexes exist once."""
     client = _get_client()
     with _collection_lock:
+        if _ready_clients.get(client):
+            return client
+
         if not client.collection_exists(MEMORY_COLLECTION):
             client.create_collection(
                 collection_name=MEMORY_COLLECTION,
@@ -79,43 +168,84 @@ def ensure_collection():
                     size=EMBEDDING_DIM,
                     distance=models.Distance.COSINE,
                 ),
+                sparse_vectors_config={
+                    BM25_VECTOR_NAME: models.SparseVectorParams(
+                        modifier=models.Modifier.IDF,
+                    )
+                },
             )
+
+        info = client.get_collection(MEMORY_COLLECTION)
+        _validate_collection(info)
+        sparse = info.config.params.sparse_vectors or {}
+        if BM25_VECTOR_NAME not in sparse:
+            client.create_vector_name(
+                collection_name=MEMORY_COLLECTION,
+                vector_name=BM25_VECTOR_NAME,
+                vector_name_config=models.SparseVectorNameConfig(
+                    sparse=models.SparseVectorConfig(
+                        modifier=models.Modifier.IDF,
+                    )
+                ),
+                wait=True,
+            )
+
+        existing_indexes = info.payload_schema or {}
+        for field_name, field_schema in _PAYLOAD_INDEXES.items():
+            if field_name not in existing_indexes:
+                client.create_payload_index(
+                    collection_name=MEMORY_COLLECTION,
+                    field_name=field_name,
+                    field_schema=field_schema,
+                    wait=True,
+                )
+
+        _ready_clients[client] = True
     return client
 
 
 def save_memory(text: str, embedding: list[float], metadata: dict = None):
-    """Store one text, its vector, and metadata as a Qdrant point."""
+    """Store one text, its dense/sparse vectors, and metadata."""
     return save_memories([(text, embedding, metadata or {})])[0]
 
 
 def save_memories(records: list[tuple[str, list[float], dict]]) -> list[dict]:
-    """Store a batch of memory chunks in one Qdrant upsert."""
+    """Store a batch of hybrid memory chunks in one Qdrant upsert."""
     if not records:
         return []
     client = ensure_collection()
     points = []
     saved = []
-    for text, vector, metadata in records:
+    for text, vector, supplied_metadata in records:
         if not text.strip():
             raise ValueError("Memory text must not be empty")
         if len(vector) != EMBEDDING_DIM:
             raise ValueError(
                 f"Expected a {EMBEDDING_DIM}-dimension vector, got {len(vector)}"
             )
-        memory_key = (metadata or {}).get("memory_key")
+        metadata = dict(supplied_metadata or {})
+        metadata.setdefault("active", True)
+        memory_key = metadata.get("memory_key")
         if memory_key:
-            user_id = (metadata or {}).get("user_id", "anonymous")
-            chunk_index = (metadata or {}).get("chunk_index", 0)
+            user_id = metadata.get("user_id", "anonymous")
+            chunk_index = metadata.get("chunk_index", 0)
             identity = f"agent-memory:{user_id}:{memory_key}"
-            if (metadata or {}).get("chunk_count") != 1:
+            if metadata.get("chunk_count") != 1:
                 identity = f"{identity}:{chunk_index}"
-            point_id = str(
-                uuid.uuid5(uuid.NAMESPACE_URL, identity)
-            )
+            point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, identity))
         else:
             point_id = str(uuid.uuid4())
-        payload = {"text": text, "metadata": metadata or {}}
-        points.append(models.PointStruct(id=point_id, vector=vector, payload=payload))
+        payload = {"text": text, "metadata": metadata}
+        points.append(
+            models.PointStruct(
+                id=point_id,
+                vector={
+                    "": vector,
+                    BM25_VECTOR_NAME: _bm25_document(text),
+                },
+                payload=payload,
+            )
+        )
         saved.append({"id": point_id, **payload})
 
     client.upsert(
@@ -131,6 +261,7 @@ def _scroll_all(
     limit: int = 10_000,
     categories: set[str] | None = None,
 ) -> list:
+    """Scroll memories for bounded list/admin operations, never for recall."""
     client = ensure_collection()
     records = []
     offset = None
@@ -149,39 +280,21 @@ def _scroll_all(
     return records
 
 
-def _tokenize(text: str) -> list[str]:
-    return _TOKEN_RE.findall(text.casefold())
+def _semantic_score(query_vector: list[float], stored_vector) -> float | None:
+    if isinstance(stored_vector, dict):
+        stored_vector = stored_vector.get("")
+    if not stored_vector or len(stored_vector) != len(query_vector):
+        return None
+    dot_product = sum(a * b for a, b in zip(query_vector, stored_vector))
+    query_norm = math.sqrt(sum(value * value for value in query_vector))
+    stored_norm = math.sqrt(sum(value * value for value in stored_vector))
+    if not query_norm or not stored_norm:
+        return 0.0
+    return dot_product / (query_norm * stored_norm)
 
 
-def _bm25_scores(query: str, points: list) -> dict[str, float]:
-    """Calculate BM25 over persisted raw text without a second database."""
-    query_terms = _tokenize(query)
-    documents = [_tokenize((point.payload or {}).get("text", "")) for point in points]
-    if not query_terms or not documents:
-        return {}
-
-    average_length = sum(map(len, documents)) / len(documents) or 1.0
-    document_frequency = Counter(
-        term for document in documents for term in set(document)
-    )
-    scores = {}
-    k1, b = 1.5, 0.75
-    for point, document in zip(points, documents):
-        frequencies = Counter(document)
-        score = 0.0
-        for term in query_terms:
-            frequency = frequencies.get(term, 0)
-            if not frequency:
-                continue
-            containing = document_frequency[term]
-            idf = math.log(1 + (len(documents) - containing + 0.5) / (containing + 0.5))
-            denominator = frequency + k1 * (
-                1 - b + b * len(document) / average_length
-            )
-            score += idf * frequency * (k1 + 1) / denominator
-        if score:
-            scores[str(point.id)] = score
-    return scores
+def _has_lexical_match(query: str, text: str) -> bool:
+    return bool(set(_tokenize(query)).intersection(_tokenize(text)))
 
 
 def _current_memory_points(
@@ -224,7 +337,7 @@ def search_memory(
     query_text: str = "",
     user_id: str | None = None,
 ) -> list[dict]:
-    """Return hybrid semantic/BM25 memory results using reciprocal-rank fusion."""
+    """Return indexed dense/BM25 results using server-side RRF."""
     if top_k < 1 or top_k > 50:
         raise ValueError("top_k must be between 1 and 50")
     if len(query_vector) != EMBEDDING_DIM:
@@ -233,39 +346,71 @@ def search_memory(
         )
 
     client = ensure_collection()
-    semantic = client.query_points(
-        collection_name=MEMORY_COLLECTION,
-        query=query_vector,
-        query_filter=_payload_filter(user_id),
-        limit=max(20, top_k * 4),
-        with_payload=True,
-    ).points
-    corpus = _scroll_all(user_id) if query_text else []
-    corpus = _current_memory_points(corpus)
-    if any(
-        (point.payload or {}).get("metadata", {}).get("memory_type") == "preference"
-        for point in corpus
-    ):
-        semantic = _current_memory_points(semantic, prefer_structured=True)
-    lexical_scores = _bm25_scores(query_text, corpus)
-    lexical_ids = sorted(lexical_scores, key=lexical_scores.get, reverse=True)
+    query_filter = _payload_filter(user_id)
+    candidate_k = max(20, top_k * 4)
 
-    by_id = {str(point.id): point for point in corpus}
-    by_id.update({str(point.id): point for point in semantic})
-    fused = Counter()
-    for rank, point in enumerate(semantic, start=1):
-        fused[str(point.id)] += 1 / (60 + rank)
-    for rank, point_id in enumerate(lexical_ids, start=1):
-        fused[point_id] += 1 / (60 + rank)
+    if not query_text.strip():
+        points = client.query_points(
+            collection_name=MEMORY_COLLECTION,
+            query=query_vector,
+            query_filter=query_filter,
+            limit=top_k,
+            with_payload=True,
+        ).points
+        results = []
+        for point in _current_memory_points(points)[:top_k]:
+            item = _normalize_point(point, point.score)
+            item["semantic_score"] = float(point.score)
+            item["lexical_score"] = None
+            item["lexical_match"] = False
+            results.append(item)
+        return results
+
+    sparse_query = _bm25_query(query_text)
+    if not sparse_query.indices:
+        return search_memory(
+            query_vector,
+            top_k,
+            query_text="",
+            user_id=user_id,
+        )
+
+    sparse_params = None
+    if user_id:
+        sparse_params = models.SearchParams(
+            idf=models.IdfCorpusParams(
+                corpus=_payload_filter(user_id),
+            )
+        )
+    points = client.query_points(
+        collection_name=MEMORY_COLLECTION,
+        prefetch=[
+            models.Prefetch(
+                query=query_vector,
+                filter=query_filter,
+                limit=candidate_k,
+            ),
+            models.Prefetch(
+                query=sparse_query,
+                using=BM25_VECTOR_NAME,
+                filter=query_filter,
+                params=sparse_params,
+                limit=candidate_k,
+            ),
+        ],
+        query=models.RrfQuery(rrf=models.Rrf(k=60)),
+        limit=min(candidate_k, max(top_k * 2, top_k + 10)),
+        with_payload=True,
+        with_vectors=[""],
+    ).points
 
     results = []
-    for point_id, score in fused.most_common(top_k):
-        item = _normalize_point(by_id[point_id], score)
-        item["semantic_score"] = next(
-            (float(point.score) for point in semantic if str(point.id) == point_id),
-            None,
-        )
-        item["lexical_score"] = lexical_scores.get(point_id)
+    for point in _current_memory_points(points)[:top_k]:
+        item = _normalize_point(point, point.score)
+        item["hybrid_score"] = float(point.score)
+        item["semantic_score"] = _semantic_score(query_vector, point.vector)
+        item["lexical_score"] = None
+        item["lexical_match"] = _has_lexical_match(query_text, item["text"])
         results.append(item)
     return results
 
@@ -279,7 +424,4 @@ def list_all_memories(
     if limit < 1:
         return []
     points = _current_memory_points(_scroll_all(user_id, limit, categories))
-    return [
-        _normalize_point(point)
-        for point in points
-    ]
+    return [_normalize_point(point) for point in points]

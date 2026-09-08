@@ -225,7 +225,9 @@ class Agent:
         for item in payload.get("memories", []):
             lexical = item.get("lexical_score")
             semantic = item.get("semantic_score")
-            if (lexical is not None and lexical > 0) or (
+            if item.get("lexical_match") or (
+                lexical is not None and lexical > 0
+            ) or (
                 semantic is not None
                 and semantic >= MEMORY_RELEVANCE_MIN_SEMANTIC_SCORE
             ):

@@ -19,6 +19,7 @@ from services.memory_extractor import (
     TurnPlan,
     plan_user_turn,
 )
+from scripts import migrate_qdrant_hybrid
 from tools import memory
 
 ADMIN = {
@@ -648,12 +649,17 @@ class VectorStoreTests(unittest.TestCase):
             {"user_id": "bob"},
         )
 
-        results = vectorstore.search_memory(
-            _vector(0.0, 1.0),
-            top_k=2,
-            query_text="Python preference",
-            user_id="alice",
-        )
+        with patch.object(
+            vectorstore,
+            "_scroll_all",
+            side_effect=AssertionError("recall must not scroll the corpus"),
+        ):
+            results = vectorstore.search_memory(
+                _vector(0.0, 1.0),
+                top_k=2,
+                query_text="Python preference",
+                user_id="alice",
+            )
 
         self.assertEqual(len(results), 2)
         self.assertIn("Python", results[0]["text"])
@@ -667,6 +673,98 @@ class VectorStoreTests(unittest.TestCase):
         )
         self.assertEqual(len(preferences), 1)
         self.assertIn("Python", preferences[0]["text"])
+
+    def test_inactive_points_are_filtered_before_hybrid_retrieval(self):
+        vectorstore.save_memory(
+            "Active Python preference.",
+            _vector(),
+            {"user_id": "alice", "category": "fact", "active": True},
+        )
+        vectorstore.save_memory(
+            "Inactive Python preference.",
+            _vector(),
+            {"user_id": "alice", "category": "fact", "active": False},
+        )
+
+        results = vectorstore.search_memory(
+            _vector(),
+            top_k=5,
+            query_text="Python preference",
+            user_id="alice",
+        )
+
+        self.assertEqual(
+            [item["text"] for item in results],
+            ["Active Python preference."],
+        )
+        self.assertTrue(results[0]["lexical_match"])
+
+    def test_existing_collection_is_upgraded_with_sparse_schema(self):
+        vectorstore.ensure_collection()
+
+        collection = self.client.get_collection(vectorstore.MEMORY_COLLECTION)
+
+        self.assertIn(
+            vectorstore.BM25_VECTOR_NAME,
+            collection.config.params.sparse_vectors,
+        )
+        self.assertEqual(
+            collection.config.params.sparse_vectors[
+                vectorstore.BM25_VECTOR_NAME
+            ].modifier,
+            vectorstore.models.Modifier.IDF,
+        )
+
+    def test_hybrid_migration_is_idempotent_and_hides_legacy_preferences(self):
+        vectorstore.ensure_collection()
+        self.client.upsert(
+            collection_name=vectorstore.MEMORY_COLLECTION,
+            points=[
+                vectorstore.models.PointStruct(
+                    id=1,
+                    vector=_vector(),
+                    payload={
+                        "text": "Alice likes legacy Python.",
+                        "metadata": {
+                            "user_id": "alice",
+                            "category": "user_preference",
+                        },
+                    },
+                ),
+                vectorstore.models.PointStruct(
+                    id=2,
+                    vector=_vector(),
+                    payload={
+                        "text": "Alice does not like Python.",
+                        "metadata": {
+                            "user_id": "alice",
+                            "category": "user_preference",
+                            "memory_type": "preference",
+                            "active": True,
+                        },
+                    },
+                ),
+            ],
+        )
+
+        first = migrate_qdrant_hybrid.migrate(batch_size=2)
+        second = migrate_qdrant_hybrid.migrate(batch_size=2)
+        points = {
+            point.id: point
+            for point in self.client.retrieve(
+                collection_name=vectorstore.MEMORY_COLLECTION,
+                ids=[1, 2],
+                with_payload=True,
+                with_vectors=True,
+            )
+        }
+
+        self.assertEqual(first["backfilled_sparse"], 1)
+        self.assertEqual(first["remaining_sparse"], 0)
+        self.assertEqual(second["backfilled_sparse"], 0)
+        self.assertFalse(points[1].payload["metadata"]["active"])
+        self.assertTrue(points[1].payload["metadata"]["legacy_hidden"])
+        self.assertIn(vectorstore.BM25_VECTOR_NAME, points[2].vector)
 
     def test_single_chunk_memory_key_is_idempotent(self):
         metadata = {

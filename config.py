@@ -44,11 +44,12 @@ MEMORY_CHUNK_OVERLAP_TOKENS = int(
 )
 
 # Vector store configuration
-QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
+QDRANT_HOST = os.getenv("QDRANT_HOST", "127.0.0.1")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
 QDRANT_URL = os.getenv("QDRANT_URL", "").strip()
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "").strip()
 MEMORY_COLLECTION = os.getenv("MEMORY_COLLECTION", "agent_memory")
+MEMORY_BM25_AVG_LEN = float(os.getenv("MEMORY_BM25_AVG_LEN", "256"))
 
 # Durable conversation history
 DATABASE_URL = os.getenv(
