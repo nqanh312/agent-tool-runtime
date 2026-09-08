@@ -2,399 +2,102 @@
 <html lang="vi">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Agent - Assignment 1</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Agent Tool Runtime</title>
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-
-        body {
-            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-            background: #0f172a;
-            color: #e2e8f0;
-            height: 100vh;
-            display: flex;
-            flex-direction: column;
-        }
-
-        /* Header */
-        .header {
-            background: #1e293b;
-            border-bottom: 1px solid #334155;
-            padding: 16px 24px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-        }
-        .header h1 {
-            font-size: 18px;
-            font-weight: 600;
-            color: #f1f5f9;
-        }
-        .header .subtitle {
-            font-size: 12px;
-            color: #94a3b8;
-            margin-top: 2px;
-        }
-        .header-actions {
-            display: flex;
-            gap: 8px;
-        }
-        .btn {
-            padding: 6px 14px;
-            border-radius: 6px;
-            border: 1px solid #475569;
-            background: #334155;
-            color: #cbd5e1;
-            font-size: 13px;
-            cursor: pointer;
-            transition: all 0.15s;
-        }
-        .btn:hover { background: #475569; color: #f1f5f9; }
-        .btn-danger { border-color: #ef4444; color: #fca5a5; }
-        .btn-danger:hover { background: #dc2626; color: #fff; }
-
-        /* Chat area */
-        .chat-container {
-            flex: 1;
-            overflow-y: auto;
-            padding: 24px;
-            display: flex;
-            flex-direction: column;
-            gap: 16px;
-        }
-
-        .message {
-            max-width: 80%;
-            padding: 12px 16px;
-            border-radius: 12px;
-            line-height: 1.6;
-            font-size: 14px;
-            white-space: pre-wrap;
-            word-break: break-word;
-        }
-        .message.user {
-            align-self: flex-end;
-            background: #3b82f6;
-            color: #fff;
-            border-bottom-right-radius: 4px;
-        }
-        .message.assistant {
-            align-self: flex-start;
-            background: #1e293b;
-            border: 1px solid #334155;
-            border-bottom-left-radius: 4px;
-        }
-
-        .message .tools-badge {
-            display: inline-flex;
-            gap: 4px;
-            flex-wrap: wrap;
-            margin-top: 8px;
-        }
-        .tool-tag {
-            font-size: 11px;
-            padding: 2px 8px;
-            background: #065f46;
-            color: #6ee7b7;
-            border-radius: 10px;
-            font-family: monospace;
-        }
-
-        /* Typing indicator */
-        .typing {
-            align-self: flex-start;
-            padding: 12px 16px;
-            background: #1e293b;
-            border: 1px solid #334155;
-            border-radius: 12px;
-            border-bottom-left-radius: 4px;
-            display: none;
-        }
-        .typing.active { display: flex; gap: 4px; align-items: center; }
-        .typing span {
-            width: 8px; height: 8px;
-            background: #64748b;
-            border-radius: 50%;
-            animation: bounce 1.4s infinite ease-in-out;
-        }
-        .typing span:nth-child(2) { animation-delay: 0.2s; }
-        .typing span:nth-child(3) { animation-delay: 0.4s; }
-        @keyframes bounce {
-            0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
-            40% { transform: scale(1); opacity: 1; }
-        }
-
-        /* Input area */
-        .input-area {
-            background: #1e293b;
-            border-top: 1px solid #334155;
-            padding: 16px 24px;
-            display: flex;
-            gap: 12px;
-        }
-        .input-area textarea {
-            flex: 1;
-            padding: 10px 14px;
-            border-radius: 10px;
-            border: 1px solid #475569;
-            background: #0f172a;
-            color: #e2e8f0;
-            font-size: 14px;
-            font-family: inherit;
-            resize: none;
-            outline: none;
-            min-height: 44px;
-            max-height: 120px;
-        }
-        .input-area textarea:focus { border-color: #3b82f6; }
-        .input-area textarea::placeholder { color: #64748b; }
-
-        .send-btn {
-            padding: 10px 20px;
-            background: #3b82f6;
-            color: #fff;
-            border: none;
-            border-radius: 10px;
-            font-size: 14px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: background 0.15s;
-            align-self: flex-end;
-        }
-        .send-btn:hover { background: #2563eb; }
-        .send-btn:disabled { background: #475569; cursor: not-allowed; }
-
-        /* Audit panel */
-        .audit-panel {
-            display: none;
-            position: fixed;
-            right: 0; top: 0; bottom: 0;
-            width: 420px;
-            background: #1e293b;
-            border-left: 1px solid #334155;
-            z-index: 100;
-            flex-direction: column;
-        }
-        .audit-panel.open { display: flex; }
-        .audit-panel .panel-header {
-            padding: 16px;
-            border-bottom: 1px solid #334155;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        .audit-panel .panel-header h2 { font-size: 16px; }
-        .audit-panel .panel-body {
-            flex: 1;
-            overflow-y: auto;
-            padding: 12px;
-            font-family: monospace;
-            font-size: 12px;
-            color: #94a3b8;
-        }
-        .audit-entry {
-            padding: 8px;
-            border-bottom: 1px solid #334155;
-            margin-bottom: 4px;
-        }
-        .audit-entry .status-ok { color: #4ade80; }
-        .audit-entry .status-fail { color: #f87171; }
-
-        /* Welcome */
-        .welcome {
-            text-align: center;
-            color: #64748b;
-            margin: auto;
-            padding: 40px;
-        }
-        .welcome h2 { color: #94a3b8; margin-bottom: 12px; font-size: 20px; }
-        .welcome p { font-size: 14px; line-height: 1.8; }
-        .welcome .caps { display: flex; gap: 12px; justify-content: center; margin-top: 20px; flex-wrap: wrap; }
-        .welcome .cap {
-            padding: 8px 16px;
-            background: #1e293b;
-            border: 1px solid #334155;
-            border-radius: 8px;
-            font-size: 13px;
-        }
+        :root{--bg:#0b1020;--surface:#11182b;--surface2:#182238;--line:#28344d;--text:#e7edf7;--muted:#91a0b8;--accent:#6d5dfc;--danger:#ef6a74;--ok:#4ade80}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px system-ui,sans-serif}button,input,select,textarea{font:inherit}.hidden{display:none!important}.app{display:flex;height:100vh}.sidebar{width:280px;background:var(--surface);border-right:1px solid var(--line);padding:14px;overflow:auto;transition:transform .2s}.brand{font-weight:700;font-size:17px;margin:4px 0 16px}.row{display:flex;gap:8px;align-items:center}.grow{flex:1}.mobile-menu{display:none}.btn{border:1px solid var(--line);background:var(--surface2);color:var(--text);border-radius:8px;padding:8px 11px;cursor:pointer}.btn:hover{border-color:#7180a0}.primary{background:var(--accent);border-color:var(--accent)}.danger{color:#fecaca}.conversation{display:block;width:100%;margin:6px 0;padding:10px;border:0;border-radius:7px;text-align:left;background:transparent;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}.conversation.active,.conversation:hover{background:var(--surface2);color:var(--text)}.main{display:flex;flex:1;min-width:0;flex-direction:column}.header{display:flex;min-height:64px;padding:12px 18px;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);background:var(--surface)}.title{font-weight:700}.subtitle,.muted{color:var(--muted);font-size:12px}.chat{flex:1;overflow:auto;padding:28px max(18px,calc((100% - 850px)/2))}.welcome{text-align:center;margin:15vh auto;color:var(--muted)}.message{max-width:80%;padding:12px 15px;border-radius:12px;margin:12px 0;line-height:1.55;white-space:pre-wrap}.message.user{margin-left:auto;background:var(--accent)}.message.assistant{background:var(--surface2);white-space:normal}.message.assistant pre{overflow:auto}.tools{margin-top:8px;color:#b8b2ff;font-size:11px}.inputbar{display:flex;gap:10px;padding:16px max(18px,calc((100% - 850px)/2));border-top:1px solid var(--line);background:var(--surface)}textarea{flex:1;resize:none;max-height:130px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--text);padding:12px}.panel{position:fixed;z-index:20;right:0;top:0;bottom:0;width:min(520px,100vw);padding:16px;background:var(--surface);border-left:1px solid var(--line);overflow:auto;box-shadow:-10px 0 30px #0008}.panel-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}.card{border:1px solid var(--line);border-radius:9px;padding:12px;margin:9px 0;background:var(--surface2)}.card-title{font-weight:650}.tag{font-size:11px;color:#c4b5fd}.form{display:grid;gap:10px}.form input,.form select{width:100%;border:1px solid var(--line);border-radius:8px;padding:10px;background:var(--bg);color:var(--text)}.auth-screen{position:fixed;inset:0;z-index:50;display:grid;place-items:center;background:radial-gradient(circle at top,#252052,var(--bg) 55%)}.auth-card{width:min(410px,calc(100% - 32px));padding:28px;background:var(--surface);border:1px solid var(--line);border-radius:14px}.error{color:#fda4af;margin:8px 0}.success{color:var(--ok);white-space:pre-wrap}.modal{position:fixed;z-index:60;inset:0;display:grid;place-items:center;background:#000a}.modal-card{width:min(440px,calc(100% - 32px));padding:24px;background:var(--surface);border:1px solid var(--line);border-radius:12px}.user-card select{width:100px}.status-ok{color:var(--ok)}.status-fail{color:var(--danger)}.audit-summary{display:flex;gap:8px;align-items:center;justify-content:space-between}.audit-steps{display:grid;gap:6px;margin-top:12px}.audit-step{display:grid;grid-template-columns:24px minmax(0,1fr) auto;gap:8px;align-items:center;padding:7px 8px;border:1px solid var(--line);border-radius:7px}.audit-step-number{display:grid;place-items:center;width:20px;height:20px;border-radius:50%;background:var(--bg);font-size:11px}.audit-step-time{color:var(--muted);font-size:10px;margin-top:2px}.audit-step-status{font-size:11px;text-transform:uppercase}.audit-step.success .audit-step-status{color:var(--ok)}.audit-step.error .audit-step-status{color:var(--danger)}.audit-step.skipped{color:var(--muted)}.audit-step-error{grid-column:2/4;color:#fda4af;font-size:12px}.audit-details{margin-top:10px}.audit-details summary{cursor:pointer;color:#c4b5fd}.audit-details pre{max-height:220px;overflow:auto;padding:9px;border-radius:7px;background:var(--bg);color:var(--muted);white-space:pre-wrap;word-break:break-word;font-size:11px}@media(max-width:720px){.sidebar{position:fixed;z-index:15;inset:0 auto 0 0;transform:translateX(-100%)}.sidebar.open{transform:none}.mobile-menu{display:inline-block}.message{max-width:94%}.header .optional{display:none}}
     </style>
 </head>
 <body>
+<section class="auth-screen" id="authScreen">
+    <form class="auth-card form" id="loginForm">
+        <h1>Agent Tool Runtime</h1><div class="muted">Đăng nhập để tiếp tục</div>
+        <input id="loginUsername" autocomplete="username" placeholder="Tên đăng nhập" required>
+        <input id="loginPassword" type="password" autocomplete="current-password" placeholder="Mật khẩu" required>
+        <div class="error" id="loginError" role="alert" aria-live="polite"></div><button class="btn primary" id="loginButton" type="submit">Đăng nhập</button>
+        <button class="btn" id="googleLoginButton" type="button">Continue with Google</button>
+    </form>
+</section>
 
-<!-- Header -->
-<div class="header">
-    <div>
-        <h1>AI Agent - Assignment 1</h1>
-        <div class="subtitle">Google Drive | Code Sandbox | RAG Memory | Tool Registry 6-step</div>
-    </div>
-    <div class="header-actions">
-        <button class="btn" onclick="toggleAudit()">Audit Log</button>
-        <button class="btn btn-danger" onclick="clearChat()">Clear</button>
-    </div>
+<div class="app hidden" id="application">
+    <aside class="sidebar" id="sidebar">
+        <div class="brand">Agent Tool Runtime</div>
+        <button class="btn primary" style="width:100%" onclick="newChat()">＋ Cuộc trò chuyện mới</button>
+        <div id="conversationList" style="margin-top:12px"></div>
+        <button class="btn hidden" id="loadMore" onclick="loadConversations(false)">Tải thêm</button>
+    </aside>
+    <main class="main">
+        <header class="header">
+            <div class="row"><button class="btn mobile-menu" onclick="toggleSidebar()">☰</button><div><div class="title" id="chatTitle">AI Agent</div><div class="subtitle optional">Drive · RAG Memory · RBAC</div></div></div>
+            <div class="row">
+                <button class="btn" onclick="openDataPanel('memory')">Memory</button>
+                <button class="btn optional" onclick="openDataPanel('documents')">Documents</button>
+                <button class="btn optional" onclick="openDataPanel('audit')">Audit</button>
+                <button class="btn hidden" id="adminButton" onclick="openAdmin()">Admin</button>
+                <button class="btn" id="profileButton" onclick="openProfile()">Settings</button>
+                <button class="btn danger" onclick="logout()">Thoát</button>
+            </div>
+        </header>
+        <div class="chat" id="chat"></div>
+        <div class="inputbar"><textarea id="messageInput" rows="1" placeholder="Nhập tin nhắn…"></textarea><button class="btn primary" id="sendButton" onclick="sendMessage()">Gửi</button></div>
+    </main>
 </div>
 
-<!-- Chat -->
-<div class="chat-container" id="chatContainer">
-    <div class="welcome" id="welcome">
-        <h2>AI Agent</h2>
-        <p>Agent with 6-step Tool Registry pipeline</p>
-        <div class="caps">
-            <div class="cap">Google Drive</div>
-            <div class="cap">Code Sandbox</div>
-            <div class="cap">RAG Memory</div>
-        </div>
-    </div>
-</div>
-
-<!-- Typing indicator -->
-<div class="typing" id="typing">
-    <span></span><span></span><span></span>
-</div>
-
-<!-- Input -->
-<div class="input-area">
-    <textarea id="input" placeholder="Type a message..." rows="1"
-        onkeydown="if(event.key==='Enter' && !event.shiftKey){event.preventDefault();sendMessage()}"
-        oninput="autoResize(this)"></textarea>
-    <button class="send-btn" id="sendBtn" onclick="sendMessage()">Send</button>
-</div>
-
-<!-- Audit Panel -->
-<div class="audit-panel" id="auditPanel">
-    <div class="panel-header">
-        <h2>Audit Log</h2>
-        <button class="btn" onclick="toggleAudit()">Close</button>
-    </div>
-    <div class="panel-body" id="auditBody">Loading...</div>
-</div>
+<section class="panel hidden" id="dataPanel"><div class="panel-head"><h2 id="dataTitle"></h2><button class="btn" onclick="closePanel('dataPanel')">Đóng</button></div><div id="dataBody"></div></section>
+<section class="panel hidden" id="adminPanel"><div class="panel-head"><h2>Quản trị tài khoản</h2><button class="btn" onclick="closePanel('adminPanel')">Đóng</button></div>
+    <form class="form card" id="createUserForm"><input id="newUsername" placeholder="Username" required><input id="newDisplayName" placeholder="Tên hiển thị"><select id="newRole"><option value="user">user</option><option value="guest">guest</option><option value="admin">admin</option></select><button class="btn primary">Tạo tài khoản</button><div class="success" id="temporaryPassword"></div></form>
+    <div id="userList"></div>
+</section>
+<section class="panel hidden" id="profilePanel"><div class="panel-head"><h2>Tài khoản</h2><button class="btn" onclick="closePanel('profilePanel')">Đóng</button></div><div id="profileInfo" class="card"></div><div id="driveConnection" class="card"></div><form class="form card" id="changePasswordForm"><h3>Đổi mật khẩu</h3><input id="currentPassword" type="password" placeholder="Mật khẩu hiện tại" required><input id="newPassword" type="password" minlength="12" maxlength="128" placeholder="Mật khẩu mới (ít nhất 12 ký tự)" required><button class="btn primary">Đổi mật khẩu</button><div class="error" id="passwordError"></div></form></section>
+<section class="modal hidden" id="forcedChange"><form class="modal-card form" id="forcedChangeForm"><h2>Đổi mật khẩu tạm</h2><div class="muted">Bạn phải đặt mật khẩu mới trước khi sử dụng ứng dụng.</div><input id="forcedPassword" type="password" minlength="12" maxlength="128" placeholder="Mật khẩu mới" required><input id="forcedConfirmation" type="password" placeholder="Nhập lại mật khẩu" required><div class="error" id="forcedError"></div><button class="btn primary">Hoàn tất</button></form></section>
 
 <script>
-const SESSION_ID = 'session-' + Date.now();
-const API = '';
-
-function autoResize(el) {
-    el.style.height = 'auto';
-    el.style.height = Math.min(el.scrollHeight, 120) + 'px';
-}
-
-function addMessage(text, role, toolsUsed = []) {
-    document.getElementById('welcome')?.remove();
-
-    const container = document.getElementById('chatContainer');
-    const div = document.createElement('div');
-    div.className = 'message ' + role;
-    div.textContent = text;
-
-    if (toolsUsed.length > 0) {
-        const badge = document.createElement('div');
-        badge.className = 'tools-badge';
-        toolsUsed.forEach(t => {
-            const tag = document.createElement('span');
-            tag.className = 'tool-tag';
-            tag.textContent = t;
-            badge.appendChild(tag);
-        });
-        div.appendChild(badge);
-    }
-
-    container.appendChild(div);
-    container.scrollTop = container.scrollHeight;
-}
-
-function setTyping(active) {
-    const el = document.getElementById('typing');
-    const container = document.getElementById('chatContainer');
-    if (active) {
-        el.classList.add('active');
-        container.appendChild(el);
-        container.scrollTop = container.scrollHeight;
-    } else {
-        el.classList.remove('active');
-    }
-}
-
-async function sendMessage() {
-    const input = document.getElementById('input');
-    const btn = document.getElementById('sendBtn');
-    const message = input.value.trim();
-    if (!message) return;
-
-    addMessage(message, 'user');
-    input.value = '';
-    input.style.height = 'auto';
-    btn.disabled = true;
-    setTyping(true);
-
-    try {
-        const res = await fetch(API + '/api/chat', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ session_id: SESSION_ID, message })
-        });
-        const data = await res.json();
-        addMessage(data.response, 'assistant', data.tools_used);
-    } catch (err) {
-        addMessage('Error: ' + err.message, 'assistant');
-    } finally {
-        setTyping(false);
-        btn.disabled = false;
-        input.focus();
-    }
-}
-
-async function clearChat() {
-    try {
-        await fetch(API + '/api/clear', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ session_id: SESSION_ID })
-        });
-    } catch(e) {}
-
-    const container = document.getElementById('chatContainer');
-    container.innerHTML = `
-        <div class="welcome" id="welcome">
-            <h2>AI Agent</h2>
-            <p>Agent with 6-step Tool Registry pipeline</p>
-            <div class="caps">
-                <div class="cap">Google Drive</div>
-                <div class="cap">Code Sandbox</div>
-                <div class="cap">RAG Memory</div>
-            </div>
-        </div>`;
-}
-
-async function toggleAudit() {
-    const panel = document.getElementById('auditPanel');
-    panel.classList.toggle('open');
-
-    if (panel.classList.contains('open')) {
-        try {
-            const res = await fetch(API + '/api/audit?session_id=' + SESSION_ID);
-            const data = await res.json();
-            const body = document.getElementById('auditBody');
-
-            if (data.audit_log.length === 0) {
-                body.textContent = 'No audit logs yet.';
-                return;
-            }
-
-            body.innerHTML = data.audit_log.map(entry => `
-                <div class="audit-entry">
-                    <div><strong>${entry.tool}</strong>
-                        <span class="${entry.status === 'success' ? 'status-ok' : 'status-fail'}">
-                            [${entry.status}]
-                        </span>
-                    </div>
-                    <div>User: ${entry.user_id} (${entry.role}) | ${entry.timestamp.split('T')[1]?.split('.')[0] || ''}</div>
-                    <div>Args: ${JSON.stringify(entry.arguments).substring(0, 100)}</div>
-                </div>
-            `).join('');
-        } catch(e) {
-            document.getElementById('auditBody').textContent = 'Error loading audit log.';
-        }
-    }
-}
+const API='';const ACTIVE_KEY='assignment-1-active-conversation-id';let accessToken=null,currentUser=null,refreshPromise=null,changeToken=null,activeConversationId=localStorage.getItem(ACTIVE_KEY),conversations=[],conversationCursor=null,loadedMessages=[],nextBefore=null;
+const el=id=>document.getElementById(id);const hasPermission=value=>currentUser?.permissions?.includes(value);
+function responseErrorMessage(data,status){if(typeof data?.detail==='string'&&data.detail.trim())return data.detail;if(Array.isArray(data?.detail)){const messages=data.detail.map(item=>item?.msg).filter(Boolean);if(messages.length)return messages.join('; ')}return `HTTP ${status}`}
+async function rawJson(url,options={}){let response;try{response=await fetch(API+url,options)}catch{throw Object.assign(new Error('Không thể kết nối đến máy chủ. Vui lòng thử lại.'),{status:0})}let data={};try{data=await response.json()}catch{}if(!response.ok)throw Object.assign(new Error(responseErrorMessage(data,response.status)),{status:response.status});return data}
+async function refreshAccess(){if(!refreshPromise)refreshPromise=rawJson('/api/auth/refresh',{method:'POST',credentials:'same-origin'}).then(data=>{applySession(data);return true}).catch(()=>false).finally(()=>refreshPromise=null);return refreshPromise}
+async function apiFetch(url,options={},retry=true){const headers=new Headers(options.headers||{});if(accessToken)headers.set('Authorization','Bearer '+accessToken);if(options.body&&!headers.has('Content-Type'))headers.set('Content-Type','application/json');try{return await rawJson(url,{...options,headers,credentials:'same-origin'})}catch(error){if(error.status===401&&retry&&await refreshAccess())return apiFetch(url,options,false);if(error.status===401)showLogin('Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.');throw error}}
+function applySession(data){accessToken=data.access_token;currentUser=data.user;el('adminButton').classList.toggle('hidden',!hasPermission('users:manage'));el('profileInfo').textContent=`${currentUser.username} · ${currentUser.role}`}
+function showLogin(message=''){accessToken=null;currentUser=null;if(message)el('loginError').textContent=message;el('application').classList.add('hidden');el('authScreen').classList.remove('hidden')}
+async function startApp(){el('authScreen').classList.add('hidden');el('application').classList.remove('hidden');showWelcome();await loadConversations();if(activeConversationId&&conversations.some(x=>x.id===activeConversationId))await selectConversation(activeConversationId);else if(conversations.length)await selectConversation(conversations[0].id);else newChat()}
+el('loginForm').onsubmit=async event=>{event.preventDefault();const button=el('loginButton');el('loginError').textContent='';button.disabled=true;try{const data=await rawJson('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({username:el('loginUsername').value,password:el('loginPassword').value})});if(data.password_change_required){changeToken=data.change_token;el('forcedChange').classList.remove('hidden');return}applySession(data);await startApp()}catch(error){el('loginError').textContent=error.status===401?'Tên đăng nhập hoặc mật khẩu không đúng.':error.status===429?'Bạn đã đăng nhập sai quá nhiều lần. Vui lòng thử lại sau.':error.message}finally{button.disabled=false}}
+el('forcedChangeForm').onsubmit=async event=>{event.preventDefault();const password=el('forcedPassword').value;if(password!==el('forcedConfirmation').value){el('forcedError').textContent='Mật khẩu nhập lại không khớp';return}try{const data=await rawJson('/api/auth/complete-password-change',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({change_token:changeToken,new_password:password})});changeToken=null;el('forcedChange').classList.add('hidden');applySession(data);await startApp()}catch(error){el('forcedError').textContent=error.message}}
+async function logout(){try{await rawJson('/api/auth/logout',{method:'POST',credentials:'same-origin'})}finally{localStorage.removeItem(ACTIVE_KEY);el('loginError').textContent='';showLogin()}}
+function closePanel(id){el(id).classList.add('hidden')}function showWelcome(){el('chat').innerHTML='<div class="welcome" id="welcome"><h2>Bắt đầu cuộc trò chuyện</h2><p>Hỏi về Drive hoặc sử dụng RAG memory của riêng bạn.</p></div>'}
+function messageNode(text,role,tools=[],safeHtml=''){const node=document.createElement('div');node.className='message '+role;if(role==='assistant'&&safeHtml)node.innerHTML = safeHtml;else node.textContent = text;if(tools.length){const badge=document.createElement('div');badge.className='tools';badge.textContent='Tools: '+tools.join(', ');node.appendChild(badge)}return node}
+function addMessage(...args){el('welcome')?.remove();el('chat').appendChild(messageNode(...args));el('chat').scrollTop=el('chat').scrollHeight}
+function renderConversations(){el('conversationList').replaceChildren();for(const item of conversations){const button=document.createElement('button');button.className='conversation'+(item.id===activeConversationId?' active':'');button.textContent=item.title;button.onclick=()=>selectConversation(item.id);el('conversationList').appendChild(button)}el('loadMore').classList.toggle('hidden',!conversationCursor)}
+async function loadConversations(reset=true){const url=new URL(API+'/api/conversations',location.origin);url.searchParams.set('limit','30');if(!reset&&conversationCursor)url.searchParams.set('cursor',conversationCursor);const data=await apiFetch(url.pathname+url.search);conversations=reset?data.conversations:conversations.concat(data.conversations);conversationCursor=data.next_cursor;renderConversations()}
+function renderMessages(){el('chat').replaceChildren();if(nextBefore!==null){const older=document.createElement('button');older.className='btn';older.textContent='Tải tin nhắn cũ hơn';older.onclick=loadOlderMessages;el('chat').appendChild(older)}for(const message of loadedMessages)el('chat').appendChild(messageNode(message.content,message.role,message.tools_used||[],message.response_html||''));if(!loadedMessages.length)showWelcome()}
+async function selectConversation(id){activeConversationId=id;localStorage.setItem(ACTIVE_KEY,id);renderConversations();const summary=conversations.find(x=>x.id===id);el('chatTitle').textContent=summary?.title||'Conversation';const data=await apiFetch(`/api/conversations/${encodeURIComponent(id)}/messages?limit=50`);loadedMessages=data.messages;nextBefore=data.next_before;renderMessages();el('chat').scrollTop=el('chat').scrollHeight;el('sidebar').classList.remove('open')}
+async function loadOlderMessages(){if(!activeConversationId||nextBefore===null)return;const oldHeight=el('chat').scrollHeight;const data=await apiFetch(`/api/conversations/${encodeURIComponent(activeConversationId)}/messages?limit=50&before=${nextBefore}`);loadedMessages=data.messages.concat(loadedMessages);nextBefore=data.next_before;renderMessages();el('chat').scrollTop=el('chat').scrollHeight-oldHeight}
+function toggleSidebar(){el('sidebar').classList.toggle('open')}
+function newChat(){activeConversationId=null;localStorage.removeItem(ACTIVE_KEY);loadedMessages=[];nextBefore=null;el('chatTitle').textContent='AI Agent';renderConversations();showWelcome();el('messageInput').focus()}
+async function sendMessage(){const input=el('messageInput'),button=el('sendButton'),message=input.value.trim();if(!message||button.disabled)return;addMessage(message,'user');input.value='';button.disabled=true;try{const data=await apiFetch('/api/chat',{method:'POST',body:JSON.stringify({conversation_id:activeConversationId,client_message_id:crypto.randomUUID(),message})});activeConversationId=data.conversation_id;localStorage.setItem(ACTIVE_KEY,activeConversationId);el('chatTitle').textContent=data.title;addMessage(data.response,'assistant',data.tools_used||[],data.response_html||'');await loadConversations()}catch(error){addMessage('Error: '+error.message,'assistant')}finally{button.disabled=false;input.focus()}}
+el('messageInput').onkeydown=event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMessage()}}
+const AUDIT_STEP_ORDER=['validate_schema','check_authentication','check_permissions','check_rate_limit','execute_handler','write_audit_log'];
+const AUDIT_STEP_LABELS={validate_schema:'Validate schema',check_authentication:'Authenticate caller',check_permissions:'Check permissions',check_rate_limit:'Enforce rate limit',execute_handler:'Execute handler',write_audit_log:'Write audit log'};
+function canonicalAuditStepName(name){return {audit_log:'write_audit_log',execute_tool:'execute_handler'}[name]||name}
+function orderedAuditSteps(steps=[]){const byName=new Map(steps.map(step=>[canonicalAuditStepName(step.name),step]));return AUDIT_STEP_ORDER.map((name,index)=>({...byName.get(name),step:index+1,name,label:AUDIT_STEP_LABELS[name],status:byName.get(name)?.status||'skipped'}))}
+function formatAuditValue(value){let text;try{text=JSON.stringify(value,null,2)}catch{text=String(value)}return text.length>5000?text.slice(0,5000)+'\n… (đã rút gọn)':text}
+function renderAuditLog(values){const root=el('dataBody');root.replaceChildren();for(const item of values){const card=document.createElement('article');card.className='card';const summary=document.createElement('div');summary.className='audit-summary';const title=document.createElement('div');title.className='card-title';title.textContent=item.tool||'Unknown tool';const status=document.createElement('span');status.className=item.status==='success'?'status-ok':'status-fail';status.textContent=item.status||'unknown';summary.append(title,status);const meta=document.createElement('div');meta.className='tag';const timestamp=new Date(item.timestamp);meta.textContent=Number.isNaN(timestamp.getTime())?(item.timestamp||''):timestamp.toLocaleString('vi-VN');const steps=document.createElement('div');steps.className='audit-steps';for(const step of orderedAuditSteps(item.steps)){const row=document.createElement('div');row.className='audit-step '+step.status;const number=document.createElement('span');number.className='audit-step-number';number.textContent=step.step;const stepInfo=document.createElement('div');const label=document.createElement('div');label.textContent=step.label;stepInfo.appendChild(label);if(step.timestamp){const stepTime=document.createElement('div');stepTime.className='audit-step-time';const parsedStepTime=new Date(step.timestamp);stepTime.textContent=Number.isNaN(parsedStepTime.getTime())?step.timestamp:parsedStepTime.toLocaleTimeString('vi-VN');stepInfo.appendChild(stepTime)}const stepStatus=document.createElement('span');stepStatus.className='audit-step-status';stepStatus.textContent=step.status;row.append(number,stepInfo,stepStatus);if(step.error){const error=document.createElement('div');error.className='audit-step-error';error.textContent=step.error;row.appendChild(error)}steps.appendChild(row)}const details=document.createElement('details');details.className='audit-details';const detailsTitle=document.createElement('summary');detailsTitle.textContent='Arguments / Result';details.appendChild(detailsTitle);const detailValue=item.error?{arguments:item.arguments,error:item.error}:{arguments:item.arguments,result:item.result};const pre=document.createElement('pre');pre.textContent=formatAuditValue(detailValue);details.appendChild(pre);card.append(summary,meta,steps,details);root.appendChild(card)}if(!values.length)root.textContent=activeConversationId?'Chưa có tool call nào trong cuộc trò chuyện này.':'Hãy chọn một cuộc trò chuyện để xem audit log.'}
+async function openDataPanel(type){el('dataPanel').classList.remove('hidden');el('dataTitle').textContent={memory:'Memory',documents:'Documents',audit:'Audit log'}[type];el('dataBody').textContent='Đang tải…';try{let url=type==='memory'?'/api/memories':type==='documents'?'/api/documents':'/api/audit?session_id='+(activeConversationId||'default');const data=await apiFetch(url);const values=type==='memory'?data.facts:type==='documents'?data.documents:data.audit_log;if(type==='audit'){renderAuditLog(values);return}el('dataBody').replaceChildren();for(const item of values){const card=document.createElement('div');card.className='card';const title=document.createElement('div');title.className='card-title';title.textContent=type==='memory'?item.text:(item.file_name||'Saved document');const meta=document.createElement('div');meta.className='tag';meta.textContent=type==='memory'?`${item.category} · ${item.topic||''}`:`${item.category} · ${item.stored_chunks}/${item.chunk_count} chunks`;card.append(title,meta);el('dataBody').appendChild(card)}if(!values.length)el('dataBody').textContent='Chưa có dữ liệu.'}catch(error){el('dataBody').textContent=error.message}}
+function openProfile(){el('profilePanel').classList.remove('hidden')}
+el('changePasswordForm').onsubmit=async event=>{event.preventDefault();try{const data=await apiFetch('/api/auth/change-password',{method:'POST',body:JSON.stringify({current_password:el('currentPassword').value,new_password:el('newPassword').value})});applySession(data);el('currentPassword').value='';el('newPassword').value='';el('passwordError').textContent='Đổi mật khẩu thành công'}catch(error){el('passwordError').textContent=error.message}}
+async function openAdmin(){el('adminPanel').classList.remove('hidden');await loadUsers()}
+async function loadUsers(){const data=await apiFetch('/api/admin/users?limit=100');const root=el('userList');root.replaceChildren();for(const user of data.users){const card=document.createElement('div');card.className='card user-card';const top=document.createElement('div');top.className='row';const name=document.createElement('div');name.className='grow card-title';name.textContent=`${user.display_name||user.username} (${user.username})`;const role=document.createElement('select');for(const value of ['admin','user','guest']){const option=document.createElement('option');option.value=value;option.textContent=value;option.selected=value===user.role;role.appendChild(option)}const toggle=document.createElement('button');toggle.className='btn';toggle.textContent=user.is_active?'Khóa':'Mở khóa';toggle.onclick=()=>updateUser(user.user_id,{is_active:!user.is_active});const save=document.createElement('button');save.className='btn';save.textContent='Lưu role';save.onclick=()=>updateUser(user.user_id,{role:role.value});const reset=document.createElement('button');reset.className='btn danger';reset.textContent='Reset mật khẩu';reset.disabled=user.user_id===currentUser.user_id;reset.onclick=()=>resetPassword(user.user_id);top.append(name,role,save,toggle,reset);card.appendChild(top);root.appendChild(card)}}
+async function updateUser(id,changes){try{await apiFetch('/api/admin/users/'+encodeURIComponent(id),{method:'PATCH',body:JSON.stringify(changes)});await loadUsers()}catch(error){alert(error.message)}}
+async function resetPassword(id){if(!confirm('Reset mật khẩu tài khoản này?'))return;try{const data=await apiFetch(`/api/admin/users/${encodeURIComponent(id)}/reset-password`,{method:'POST'});alert('Mật khẩu tạm (chỉ hiển thị lần này):\n'+data.temporary_password);await loadUsers()}catch(error){alert(error.message)}}
+el('createUserForm').onsubmit=async event=>{event.preventDefault();try{const data=await apiFetch('/api/admin/users',{method:'POST',body:JSON.stringify({username:el('newUsername').value,display_name:el('newDisplayName').value,role:el('newRole').value})});el('temporaryPassword').textContent='Mật khẩu tạm (chỉ hiển thị lần này):\n'+data.temporary_password;el('newUsername').value='';el('newDisplayName').value='';await loadUsers()}catch(error){el('temporaryPassword').textContent=error.message}}
+el('googleLoginButton').onclick=()=>location.assign('/api/auth/google/start');
+async function loadDriveStatus(){const root=el('driveConnection');if(!hasPermission('drive:read')){root.textContent='Google Drive is unavailable for this role.';return}try{const status=await apiFetch('/api/integrations/google-drive/status');root.replaceChildren();const title=document.createElement('div');title.className='card-title';title.textContent='Google Drive';const detail=document.createElement('div');detail.className='muted';detail.textContent=status.connected?`Connected as ${status.email}`:status.configured?'Not connected':'Google OAuth is not configured';const button=document.createElement('button');button.className='btn';button.style.marginTop='10px';button.textContent=status.connected?'Disconnect':'Connect Drive';button.disabled=!status.configured;button.onclick=status.connected?disconnectDrive:connectDrive;root.append(title,detail,button)}catch(error){root.textContent=error.message}}
+async function connectDrive(){try{const data=await apiFetch('/api/integrations/google-drive/authorize',{method:'POST'});location.assign(data.authorization_url)}catch(error){alert(error.message)}}
+async function disconnectDrive(){if(!confirm('Disconnect Google Drive?'))return;try{await apiFetch('/api/integrations/google-drive/disconnect',{method:'POST'});await loadDriveStatus()}catch(error){alert(error.message)}}
+const applySessionBase=applySession;applySession=data=>{applySessionBase(data);el('changePasswordForm').classList.toggle('hidden',!currentUser.has_password)};
+const startAppBase=startApp;startApp=async()=>{await startAppBase();await loadDriveStatus()};
+const openProfileBase=openProfile;openProfile=()=>{openProfileBase();loadDriveStatus()};
+(async()=>{const oauth=new URLSearchParams(location.search).get('oauth');if(oauth==='error')el('loginError').textContent='Google authorization failed or was cancelled.';if(location.search)history.replaceState({},'',location.pathname);if(await refreshAccess())await startApp();else showLogin()})();
 </script>
 </body>
 </html>

@@ -1,20 +1,21 @@
-"""
-Google Drive Tools - List files and read file content.
-"""
+"""Expose Google Drive operations as agent tools."""
+
+import os
 
 from registry.models import ToolDefinition
+from registry import get_current_user
 from services import drive_service
 from services.file_reader import read_file
 
 
-# ============================================================
-# Tool 1: LIST DRIVE FILES
-# ============================================================
+# List files visible to the authenticated user's Google grant.
 
 def list_drive_files(folder_id: str = "") -> dict:
     """List all files in Google Drive."""
     fid = folder_id if folder_id else None
-    files = drive_service.list_files(folder_id=fid)
+    files = drive_service.list_files(
+        user_id=get_current_user()["user_id"], folder_id=fid
+    )
     return {
         "total_files": len(files),
         "files": files,
@@ -38,19 +39,51 @@ list_files_tool = ToolDefinition(
         },
         "required": [],
     },
-    required_scopes=["drive:read"],
+    required_permissions=["drive:read"],
     handler=list_drive_files,
 )
 
 
-# ============================================================
-# Tool 2: READ DRIVE FILE
-# ============================================================
+def search_drive_files(query: str) -> dict:
+    """Search accessible Google Drive files by name."""
+    files = drive_service.search_files(
+        user_id=get_current_user()["user_id"], query=query
+    )
+    return {
+        "query": query,
+        "total_files": len(files),
+        "files": files,
+    }
 
-def read_drive_file(file_id: str) -> dict:
-    """Download a file from Google Drive and read its content."""
-    import os
-    download = drive_service.download_file(file_id=file_id)
+
+search_files_tool = ToolDefinition(
+    name="search_drive_files",
+    description=(
+        "Search Google Drive file names using a concise query. Use this instead "
+        "of repeatedly listing folders when the user wants a particular file."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "File name or distinctive file-name terms.",
+            },
+        },
+        "required": ["query"],
+    },
+    required_permissions=["drive:read"],
+    handler=search_drive_files,
+)
+
+
+# Download and convert one Drive file.
+
+def get_drive_file(file_id: str) -> dict:
+    """Download one Drive file and return its Markdown content."""
+    download = drive_service.download_file(
+        user_id=get_current_user()["user_id"], file_id=file_id
+    )
     temp_path = download["temp_path"]
     try:
         result = read_file(temp_path)
@@ -61,16 +94,19 @@ def read_drive_file(file_id: str) -> dict:
         "file_name": download["file_name"],
         "mime_type": download["mime_type"],
         "content": result["content"],
+        "truncated": result["truncated"],
+        "total_characters": result["total_characters"],
     }
 
 
 read_file_tool = ToolDefinition(
-    name="read_drive_file",
+    name="get_drive_file",
     description=(
-        "Read the content of a file from Google Drive by its file ID. "
-        "Supports many formats: PDF, DOCX, XLSX, PPTX, images, Google Docs/Sheets/Slides, text files, and more. "
-        "Content is converted to Markdown using MarkItDown. "
-        "Use list_drive_files first to get file IDs."
+        "Download and read one Google Drive file by its file ID. "
+        "The result contains Markdown content suitable for displaying in chat. "
+        "Supports PDF, DOCX, XLS/XLSX, PPTX, Google Docs/Sheets/Slides, "
+        "HTML, CSV, JSON, XML, and text files. "
+        "Use search_drive_files first when only a file name is known."
     ),
     input_schema={
         "type": "object",
@@ -82,9 +118,12 @@ read_file_tool = ToolDefinition(
         },
         "required": ["file_id"],
     },
-    required_scopes=["drive:read"],
-    handler=read_drive_file,
+    required_permissions=["drive:read"],
+    handler=get_drive_file,
 )
 
+# Backward-compatible Python alias. The model-facing tool name is get_drive_file.
+read_drive_file = get_drive_file
 
-ALL_DRIVE_TOOLS = [list_files_tool, read_file_tool]
+
+ALL_DRIVE_TOOLS = [list_files_tool, search_files_tool, read_file_tool]
