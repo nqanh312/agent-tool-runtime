@@ -239,7 +239,6 @@ class PersistentChatApiTests(unittest.TestCase):
         self.assertIn("/api/conversations", body)
         self.assertIn("function newChat()", body)
         self.assertIn("localStorage.removeItem(ACTIVE_KEY)", body)
-        self.assertNotIn("apiFetch('/api/clear'", body)
 
 
 if __name__ == "__main__":

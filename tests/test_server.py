@@ -98,17 +98,6 @@ class ServerRenderingTests(unittest.TestCase):
         self.assertIs(result, cached)
         self.assertEqual(result.principal["permissions"], ["chat:use"])
 
-    def test_clear_checks_conversation_ownership(self):
-        with patch.object(
-            server.conversation_repository,
-            "get_conversation",
-            side_effect=server.ConversationNotFoundError("Conversation not found"),
-        ):
-            response = self.client.post(
-                "/api/clear", json={"conversation_id": str(uuid.uuid4())}
-            )
-        self.assertEqual(response.status_code, 404)
-
     def test_chat_returns_plain_text_and_sanitized_html(self):
         conversation_id = str(uuid.uuid4())
         repository = MagicMock()

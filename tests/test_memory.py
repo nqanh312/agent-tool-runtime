@@ -24,9 +24,7 @@ from tools import memory
 
 ADMIN = {
     "user_id": "user_admin", "role": "admin", "is_active": True,
-    "permissions": [
-        "drive:read", "local_file:read", "memory:read", "memory:write"
-    ],
+    "permissions": ["drive:read", "memory:read", "memory:write"],
 }
 STANDARD_USER = {
     "user_id": "user_standard", "role": "user", "is_active": True,
@@ -155,18 +153,6 @@ class MemoryExtractorTests(unittest.TestCase):
         self.assertEqual(plan.intent, "recall_memory")
         self.assertEqual(plan.search_query, "user preferences")
         self.assertEqual(list(plan.memories), [])
-
-    def test_fci_routes_local_file_reads_separately(self):
-        client, _create = self._client_returning(
-            [],
-            intent="read_local_file",
-            file_query=r"C:\docs\notes.pdf",
-        )
-        with patch.object(memory_extractor, "_get_client", return_value=client):
-            plan = plan_user_turn(r"Read C:\docs\notes.pdf")
-
-        self.assertEqual(plan.intent, "read_local_file")
-        self.assertEqual(plan.file_query, r"C:\docs\notes.pdf")
 
     def test_agent_saves_extracted_memory_before_calling_the_llm(self):
         captured = []
@@ -302,39 +288,6 @@ class MemoryExtractorTests(unittest.TestCase):
         self.assertNotIn("save_document_memory", tool_names)
         self.assertNotIn("upsert_user_memory", tool_names)
         self.assertNotIn("list_drive_files", tool_names)
-        self.assertNotIn("read_file", tool_names)
-
-    def test_local_file_route_only_exposes_read_file(self):
-        llm = _FinalResponseLLM()
-        with patch.object(
-            agent_module,
-            "plan_user_turn",
-            return_value=TurnPlan(
-                intent="read_local_file",
-                file_query=r"C:\docs\notes.pdf",
-            ),
-        ):
-            Agent(
-                principal=ADMIN,
-                llm_client=llm,
-                include_local_file_tools=True,
-            ).run(r"Read C:\docs\notes.pdf")
-
-        self.assertEqual(
-            {tool["name"] for tool in llm.requests[0]["tools"]},
-            {"read_file"},
-        )
-
-    def test_web_agent_does_not_expose_local_paths(self):
-        llm = _FinalResponseLLM()
-        with patch.object(
-            agent_module,
-            "plan_user_turn",
-            return_value=TurnPlan(intent="read_local_file"),
-        ):
-            Agent(principal=ADMIN, llm_client=llm).run(r"Read C:\secrets.txt")
-
-        self.assertEqual(llm.requests[0]["tools"], [])
 
     def test_planner_failure_fails_closed_without_tools(self):
         llm = _FinalResponseLLM()

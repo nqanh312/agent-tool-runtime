@@ -24,7 +24,6 @@ from services.auth import (
     AuthConfigurationError,
     DuplicateUsernameError,
     LastAdminError,
-    ROLE_PERMISSIONS,
     auth_repository,
     auth_service,
     generate_temporary_password,
@@ -214,10 +213,6 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=100_000)
     conversation_id: str | None = None
     client_message_id: str | None = None
-
-
-class ClearRequest(BaseModel):
-    conversation_id: str | None = None
 
 
 class ChatResponse(BaseModel):
@@ -718,20 +713,6 @@ def list_conversation_messages(
         )
     except ConversationNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@app.post("/api/clear")
-def clear_session(
-    req: ClearRequest,
-    user: dict = Depends(require_permissions("conversation:write")),
-):
-    if req.conversation_id:
-        try:
-            conversation_repository.get_conversation(req.conversation_id, user["user_id"])
-        except ConversationNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        sessions.pop(_agent_key(user["user_id"], req.conversation_id), None)
-    return {"status": "cache_cleared", "conversation_id": req.conversation_id}
 
 
 @app.get("/api/audit")

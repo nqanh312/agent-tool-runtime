@@ -46,7 +46,7 @@ ROLE_PERMISSIONS: dict[str, tuple[str, ...]] = {
     "admin": (
         "chat:use", "conversation:read", "conversation:write",
         "audit:read", "drive:read", "memory:read", "memory:write",
-        "local_file:read", "users:manage",
+        "users:manage",
     ),
     "user": (
         "chat:use", "conversation:read", "conversation:write",
@@ -176,10 +176,6 @@ class ExternalIdentity(AuthBase):
 
 
 class AuthenticationError(PermissionError):
-    pass
-
-
-class AuthorizationError(PermissionError):
     pass
 
 

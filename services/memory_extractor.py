@@ -24,7 +24,6 @@ TURN_INTENTS = {
     "recall_memory",
     "browse_drive",
     "read_drive_file",
-    "read_local_file",
     "save_current_document",
     "general_chat",
 }
@@ -130,8 +129,6 @@ Choose exactly one primary intent:
   access Google Drive.
 - browse_drive: explicitly asks to list/browse files or folders in Google Drive.
 - read_drive_file: explicitly asks to find/open/read/display a particular Drive file.
-- read_local_file: explicitly asks to read/display a local file and provides or refers to
-  a local filesystem path. Do not use this for Google Drive files.
 - save_current_document: explicitly asks to save/remember the current, last displayed,
   above, or "this" file/content.
 - general_chat: none of the above.
@@ -253,14 +250,9 @@ def plan_user_turn(message: str) -> TurnPlan:
         search_query=search_query if intent == "recall_memory" else "",
         file_query=(
             file_query
-            if intent in {"read_drive_file", "read_local_file"} or drive_fallback
+            if intent == "read_drive_file" or drive_fallback
             else ""
         ),
         drive_fallback=drive_fallback,
         memories=tuple(extracted),
     )
-
-
-def extract_user_memories(message: str) -> list[ExtractedMemory]:
-    """Compatibility helper; new code should consume the complete turn plan."""
-    return list(plan_user_turn(message).memories)

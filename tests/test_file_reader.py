@@ -1,4 +1,4 @@
-"""Tests for local file conversion with MarkItDown."""
+"""Tests for the filesystem conversion used by Google Drive downloads."""
 
 from pathlib import Path
 import tempfile

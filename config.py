@@ -17,10 +17,9 @@ OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "").strip()
 
 FCI_API_KEY = os.getenv("FCI_API_KEY") or os.getenv("FPT_API_KEY")
 FCI_MODEL = os.getenv("FCI_MODEL", "gemma-4-31B-it")
-MEMORY_EXTRACTION_MODEL = os.getenv("MEMORY_EXTRACTION_MODEL", FCI_MODEL).strip()
 TURN_PLANNER_MODEL = os.getenv(
     "TURN_PLANNER_MODEL",
-    MEMORY_EXTRACTION_MODEL,
+    FCI_MODEL,
 ).strip()
 MEMORY_EXTRACTION_MIN_CONFIDENCE = float(
     os.getenv("MEMORY_EXTRACTION_MIN_CONFIDENCE", "0.7")
@@ -96,11 +95,3 @@ GOOGLE_TOKEN_ENCRYPTION_KEY = os.getenv(
     "GOOGLE_TOKEN_ENCRYPTION_KEY", ""
 ).strip()
 GOOGLE_OAUTH_STATE_MINUTES = int(os.getenv("GOOGLE_OAUTH_STATE_MINUTES", "10"))
-
-# Local file access is an explicit CLI-only capability. It fails closed until
-# at least one root is configured (semicolon-separated on Windows).
-LOCAL_FILE_ALLOWED_ROOTS = tuple(
-    value.strip()
-    for value in os.getenv("LOCAL_FILE_ALLOWED_ROOTS", "").split(os.pathsep)
-    if value.strip()
-)

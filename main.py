@@ -1,9 +1,8 @@
 """Provide an interactive command-line interface for the agent."""
 
 import json
-import sys
 from agent import Agent
-from config import CLI_USER_ID, LOCAL_FILE_ALLOWED_ROOTS
+from config import CLI_USER_ID
 from services.auth import AuthenticationError, auth_repository
 from services.audit_logs import audit_log_repository
 
@@ -37,7 +36,6 @@ def main():
     agent = Agent(
         principal=principal,
         audit_sink=lambda entry: audit_log_repository.append(context_id, entry),
-        include_local_file_tools=bool(LOCAL_FILE_ALLOWED_ROOTS),
     )
 
     print_help()

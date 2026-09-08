@@ -13,7 +13,7 @@ Save $\rightarrow$ search&#x20;
 
 | Tool | Result |
 | --- | --- |
-| read_file | Success |
+| get_drive_file | Success |
 """
 
         rendered = render_chat_markdown(source)
@@ -22,7 +22,7 @@ Save $\rightarrow$ search&#x20;
         self.assertIn("Save → search", rendered)
         self.assertNotIn("&#x20;", rendered)
         self.assertIn("<table>", rendered)
-        self.assertIn("<td>read_file</td>", rendered)
+        self.assertIn("<td>get_drive_file</td>", rendered)
 
     def test_removes_unsafe_html_and_javascript_links(self):
         rendered = render_chat_markdown(

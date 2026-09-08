@@ -68,8 +68,7 @@ This separation keeps model reasoning, policy enforcement, and external service 
 |-- migrations/              # Alembic database migrations
 |-- tools/
 |   |-- google_drive.py      # Google Drive tools
-|   |-- memory.py            # Long-term memory tools
-|   `-- read_file.py         # Local file-reading tool
+|   `-- memory.py            # Long-term memory tools
 |-- static/
 |   `-- index.html           # Browser-based chat interface
 |-- tests/                   # Automated tests
@@ -135,7 +134,6 @@ MEMORY_CHUNK_OVERLAP_TOKENS=75
 FCI_API_KEY=your_fci_api_key
 FCI_MODEL=gemma-4-31B-it
 FCI_BASE_URL=https://mkp-api.fptcloud.com/v1
-MEMORY_EXTRACTION_MODEL=gemma-4-31B-it
 TURN_PLANNER_MODEL=gemma-4-31B-it
 MEMORY_EXTRACTION_MIN_CONFIDENCE=0.7
 MEMORY_RELEVANCE_MIN_SEMANTIC_SCORE=0.7
@@ -164,7 +162,6 @@ GOOGLE_OAUTH_DRIVE_SCOPES=https://www.googleapis.com/auth/drive.readonly
 GOOGLE_OAUTH_ALLOWED_DOMAIN=
 GOOGLE_TOKEN_ENCRYPTION_KEY=replace_with_a_fernet_key
 GOOGLE_OAUTH_STATE_MINUTES=10
-LOCAL_FILE_ALLOWED_ROOTS=D:\Documents\AgentUploads
 ```
 
 Google authentication requests only `openid email profile`. Drive consent is a
@@ -328,7 +325,6 @@ Open [http://localhost:9004](http://localhost:9004). The health endpoint is avai
 | `POST` | `/api/chat` | Send a message, creating a conversation when needed |
 | `GET` | `/api/conversations` | List the current user's conversations |
 | `GET` | `/api/conversations/{id}/messages` | Load a page of stored messages |
-| `POST` | `/api/clear` | Evict transient Agent state without deleting chat history |
 | `GET` | `/api/audit?session_id=...` | Retrieve tool-call audit entries and six-step status trails |
 | `GET` | `/api/memories` | List the user's current facts and preferences |
 | `GET` | `/api/documents` | List saved document sources and chunk counts |
@@ -401,4 +397,3 @@ python -m unittest discover -v
 - Configure an exact `CORS_ORIGINS` allowlist; wildcard origins are not used with credentials.
 - Keep local Qdrant bound to `127.0.0.1`; use authentication and network controls when exposing it remotely.
 - Keep local PostgreSQL bound to `127.0.0.1`; use TLS and managed credentials when deploying it remotely.
-- Local path access is disabled for web agents. The CLI registers it only when `LOCAL_FILE_ALLOWED_ROOTS` is set, requires `local_file:read`, canonicalizes the requested path inside an allowed root, and rejects common credential/key files and sensitive directories. Separate multiple Windows roots with `;`.

@@ -241,11 +241,6 @@ def _build_chunks(content: str, category: str = "general") -> list[_MemoryChunk]
     return chunks
 
 
-def _chunk_content(content: str, category: str = "general") -> list[str]:
-    """Return chunk texts; retained as a small compatibility helper."""
-    return [chunk.text for chunk in _build_chunks(content, category)]
-
-
 # Shared persistence path used by the two deliberately separate write APIs.
 
 def _persist_memory(
