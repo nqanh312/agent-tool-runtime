@@ -1,316 +1,160 @@
 # Agent Tool Runtime
 
-> A modular runtime for building auditable AI agents with secure tool execution and long-term memory.
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 
-Agent Tool Runtime is an experimental Python framework for connecting Anthropic, OpenAI, or FCI/FPT Cloud models to external tools through a governed execution pipeline. It combines a central tool registry, scoped access control, audit logging, document ingestion, and RAG-based memory in a compact codebase designed for learning and research.
+> A modular Python runtime for auditable AI agents, governed tool execution, and long-term memory.
 
-The project explores a practical question: **how can an AI agent use external capabilities while keeping tool execution explicit, inspectable, and controllable?**
+Agent Tool Runtime connects Anthropic, OpenAI, or FCI/FPT Cloud models to external tools through a policy-controlled execution pipeline. It includes user authentication, scoped permissions, audit logs, Google Drive ingestion, hybrid RAG memory, a CLI, and a FastAPI web application.
 
 > [!IMPORTANT]
-> This project is under active development. The agent loop, interfaces, governed tool execution, Google Drive tools, document conversion, and hybrid RAG memory are available. See [Development status](#development-status) before running the project.
+> This is an experimental learning under active development. Review [Current limitations](#current-limitations) before deploying it beyond a trusted environment.
 
 ## Highlights
 
-- Provider-independent agent loop with Anthropic and OpenAI-compatible tool use.
-- Runtime provider selection for Anthropic, OpenAI, and FCI/FPT Cloud.
-- Central registry for tool definitions and invocation.
-- Six-stage execution pipeline for validation, authentication, authorization, rate limiting, execution, and auditing.
-- Per-user read-only Google Drive integration through OAuth 2.0.
-- Document conversion for PDF, DOCX, XLS/XLSX, PPTX, HTML, and text formats using MarkItDown.
-- FCI-based extraction of explicit user facts and preferences into structured current-state memory before the chat model runs.
-- FCI turn routing that selects RAG, Drive browsing, Drive reading, artifact saving, or general chat in the same classification call.
-- Sanitized Markdown rendering for headings, tables, lists, code blocks, and links in web chat.
-- Semantic long-term memory using OpenAI or FCI embeddings and Qdrant.
-- PostgreSQL-backed conversation history with a responsive ChatGPT-style sidebar.
-- CLI and FastAPI interfaces with user-isolated conversation history.
+- Provider-independent agent loop for Anthropic and OpenAI-compatible APIs.
+- Central tool registry with schema validation, authentication, authorization, rate limiting, execution, and auditing.
+- Per-user Google Drive access through OAuth 2.0.
+- PDF, DOCX, XLS/XLSX, PPTX, HTML, and text conversion with MarkItDown.
+- Structured fact and preference extraction with FCI turn planning.
+- User-isolated hybrid retrieval using dense vectors, BM25 sparse vectors, and Qdrant.
+- PostgreSQL-backed authentication, conversations, artifacts, and audit history.
+- CLI and responsive browser-based chat interfaces.
 
 ## Architecture
 
 ![Agent Tool Runtime architecture](./agent_tool_flow.png)
 
-Every tool call is designed to pass through the same policy boundary:
+Every tool operation crosses the same policy boundary:
 
 ```text
 User request
-    -> Configured model provider
-    -> Tool registry
-       -> Validate schema
-       -> Authenticate caller
-       -> Check scopes
-       -> Enforce rate limit
-       -> Execute handler
-       -> Write audit log
-    -> Tool result
-    -> Claude response
+    -> FCI turn planner
+    -> Agent loop
+       -> Pre-routed operation or model tool request
+       -> Tool registry
+          -> Validate schema
+          -> Authenticate caller
+          -> Check permissions
+          -> Enforce rate limit
+          -> Execute handler
+          -> Write audit log
+       -> Tool result
+    -> Configured chat model
+    -> Model response
 ```
 
-This separation keeps model reasoning, policy enforcement, and external service access independent and easier to test.
-
-## Project structure
-
-```text
-.
-|-- agent.py                 # Provider-independent conversation and tool loop
-|-- config.py                # Environment-based configuration
-|-- main.py                  # Interactive CLI
-|-- server.py                # FastAPI service and web UI
-|-- registry/
-|   |-- models.py            # Tool metadata model
-|   `-- registry.py          # Policy and execution pipeline
-|-- services/
-|   |-- drive_service.py     # Google Drive API adapter
-|   |-- embedding.py         # OpenAI embedding adapter
-|   |-- file_reader.py       # Document-to-Markdown conversion
-|   |-- llm.py               # Anthropic/OpenAI/FCI model adapters
-|   |-- conversations.py     # PostgreSQL conversation repository
-|   |-- audit_logs.py        # PostgreSQL tool-audit repository
-|   `-- vectorstore.py       # Qdrant memory adapter
-|-- migrations/              # Alembic database migrations
-|-- tools/
-|   |-- google_drive.py      # Google Drive tools
-|   `-- memory.py            # Long-term memory tools
-|-- static/
-|   `-- index.html           # Browser-based chat interface
-|-- tests/                   # Automated tests
-`-- requirements.txt
-```
+See [Architecture and design notes](./docs/architecture.md) for the memory model, routing behavior, and trust boundaries.
 
 ## Requirements
 
 - Python 3.10 or later
-- An API key for the selected model provider (Anthropic, OpenAI, or FCI)
-- An API key authorized for the selected OpenAI or FCI embedding model
-- Docker Desktop or accessible PostgreSQL and Qdrant instances
-- A Google Cloud Web OAuth client for Google login and per-user Drive access
+- Docker Desktop, or accessible PostgreSQL and Qdrant instances
+- An API key for the selected chat provider
+- An API key for the selected embedding provider
+- Optional: an FCI API key for turn planning, tool routing, and automatic memory extraction
+- Optional: a Google Cloud Web OAuth client for Google login and Drive access
 
-## Getting started
+## Quick start
 
-### 1. Clone the repository
+### 1. Clone and install
 
 ```bash
-git clone https://github.com/<your-username>/agent-tool-runtime.git
+git clone https://github.com/nqanh312/agent-tool-runtime.git
 cd agent-tool-runtime
+python -m venv .venv
 ```
 
-### 2. Create a virtual environment
-
-Windows PowerShell:
+Activate the environment on Windows PowerShell:
 
 ```powershell
-python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
 ```
 
-macOS or Linux:
+Or on macOS/Linux:
 
 ```bash
-python3 -m venv .venv
 source .venv/bin/activate
+```
+
+Then install the dependencies:
+
+```bash
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-### 3. Configure environment variables
+### 2. Configure the environment
 
-Copy `.env.example` to `.env`, then configure the selected provider:
+Copy `.env.example` to `.env`:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+On macOS/Linux, use `cp .env.example .env` instead. At minimum, review these settings:
 
 ```env
 LLM_PROVIDER=anthropic
-LLM_MODEL=
-
 ANTHROPIC_API_KEY=your_anthropic_api_key
-ANTHROPIC_MODEL=claude-sonnet-4-20250514
 
-OPENAI_API_KEY=your_openai_api_key
-OPENAI_LLM_MODEL=gpt-4.1-mini
 EMBEDDING_PROVIDER=openai
+OPENAI_API_KEY=your_openai_api_key
 EMBEDDING_MODEL=text-embedding-3-small
 EMBEDDING_DIM=1536
-MEMORY_CHUNK_TOKENS=500
-MEMORY_CHUNK_OVERLAP_TOKENS=75
-
-FCI_API_KEY=your_fci_api_key
-FCI_MODEL=gemma-4-31B-it
-FCI_BASE_URL=https://mkp-api.fptcloud.com/v1
-TURN_PLANNER_MODEL=gemma-4-31B-it
-MEMORY_EXTRACTION_MIN_CONFIDENCE=0.7
-MEMORY_RELEVANCE_MIN_SEMANTIC_SCORE=0.7
-
-QDRANT_HOST=127.0.0.1
-QDRANT_PORT=6333
-MEMORY_COLLECTION=agent_memory
-MEMORY_BM25_AVG_LEN=256
 
 DATABASE_URL=postgresql+psycopg://agent:agent@localhost:5432/agent_db
-CHAT_CONTEXT_MAX_TOKENS=12000
-CHAT_MESSAGE_MAX_CHARS=12000
-MAX_REQUEST_BODY_BYTES=65536
-CHAT_RATE_LIMIT_REQUESTS=10
-CHAT_RATE_LIMIT_WINDOW_SECONDS=60
-CHAT_TOKEN_QUOTA_PER_DAY=250000
-CHAT_TOKEN_BASE_CHARGE=1024
-AGENT_SESSION_TTL_SECONDS=1800
-AGENT_SESSION_CACHE_MAX=500
-CONVERSATION_LOCK_TTL_SECONDS=300
-CONVERSATION_LOCK_CACHE_MAX=2000
+QDRANT_HOST=127.0.0.1
+QDRANT_PORT=6333
+
 JWT_SECRET=replace_with_at_least_32_random_characters
-JWT_ACCESS_MINUTES=15
-JWT_REFRESH_DAYS=7
-JWT_PASSWORD_CHANGE_MINUTES=10
-AUTH_COOKIE_SECURE=false
-CORS_ORIGINS=http://localhost:9004
-TRUSTED_PROXY_IPS=127.0.0.1,::1
-SERVER_HOST=127.0.0.1
-SERVER_PORT=9004
-
-# Existing application user whose tenant and permissions the local CLI uses.
-CLI_USER_ID=user_admin
-
-GOOGLE_OAUTH_CLIENT_ID=your_web_oauth_client_id
-GOOGLE_OAUTH_CLIENT_SECRET=your_web_oauth_client_secret
-GOOGLE_OAUTH_REDIRECT_URI=http://localhost:9004/api/auth/google/callback
-GOOGLE_OAUTH_DRIVE_SCOPES=https://www.googleapis.com/auth/drive.readonly
-GOOGLE_OAUTH_ALLOWED_DOMAIN=
-GOOGLE_TOKEN_ENCRYPTION_KEY=replace_with_a_fernet_key
-GOOGLE_OAUTH_STATE_MINUTES=10
 ```
 
-Google authentication requests only `openid email profile`. Drive consent is a
-separate, authenticated action and the encrypted offline grant is owned by the
-application `user_id`. The runtime uses Google's stable `sub` claim for identity;
-it never merges accounts by email.
+Generate a suitable local JWT secret with:
 
-For Qdrant Cloud, set `QDRANT_URL` and `QDRANT_API_KEY` instead of the local host/port. Memory is partitioned by the authenticated registry user. Facts and preferences up to the configured token limit remain intact. Documents are parsed into Markdown headings, paragraphs, lists, tables, and fenced code blocks; blocks are packed into token-limited chunks with overlap, and only oversized blocks are hard-split. Retrieval performs dense and indexed BM25 sparse searches in Qdrant, scopes IDF statistics to the authenticated user, and fuses candidates server-side with reciprocal-rank fusion.
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+```
 
-Select exactly one chat-model provider with `LLM_PROVIDER`:
+Chat and embedding providers are selected independently:
 
-| Provider | Value | Required key | Default model |
+| Purpose | Provider value | API key | Default model |
 | --- | --- | --- | --- |
-| Anthropic | `anthropic` | `ANTHROPIC_API_KEY` | `ANTHROPIC_MODEL` |
-| OpenAI | `openai` | `OPENAI_API_KEY` | `OPENAI_LLM_MODEL` |
-| FCI/FPT Cloud | `fci` | `FCI_API_KEY` | `FCI_MODEL` |
+| Chat | `anthropic` | `ANTHROPIC_API_KEY` | `ANTHROPIC_MODEL` |
+| Chat | `openai` | `OPENAI_API_KEY` | `OPENAI_LLM_MODEL` |
+| Chat | `fci` | `FCI_API_KEY` | `FCI_MODEL` |
+| Embeddings | `openai` | `OPENAI_API_KEY` | `EMBEDDING_MODEL` |
+| Embeddings | `fci` | `FCI_API_KEY` | `EMBEDDING_MODEL` |
 
-`LLM_MODEL` is an optional global override. Leave it empty to use the model configured for the selected provider. FCI uses its OpenAI-compatible Chat Completions endpoint; `FPT_API_KEY` is also accepted as an alias for `FCI_API_KEY`.
+`LLM_MODEL` can override the model for the selected chat provider. Use a new `MEMORY_COLLECTION` whenever the embedding model or dimension changes.
 
-Select `EMBEDDING_PROVIDER=openai` or `EMBEDDING_PROVIDER=fci` independently of the chat provider. For FCI embeddings, the API key must be authorized for an embedding model. Example:
+Turn planning always uses FCI, independently of `LLM_PROVIDER`. Without `FCI_API_KEY`, ordinary chat remains available, but the planner fails closed to general chat and does not route the turn to Drive or memory tools.
 
-```env
-EMBEDDING_PROVIDER=fci
-EMBEDDING_MODEL=multilingual-e5-large
-EMBEDDING_DIM=1024
-MEMORY_COLLECTION=agent_memory_fci_1024
-```
-
-Use a new collection whenever the embedding dimension or embedding model changes; existing vectors from another model are not compatible.
-
-Turn planning and automatic fact extraction use one FCI request, independently of
-`LLM_PROVIDER`. The planner makes one forced structured-output call for each user
-message. It routes the turn to RAG recall, Drive browsing, Drive file reading,
-current-artifact saving, or general chat. It also assigns
-`category`, an English `snake_case` topic, normalized value, polarity, and confidence;
-compound statements are split into separate memories. A preference is keyed by
-`category + topic + canonical_value`, so a later polarity change updates the same
-record instead of leaving contradictory active records. Set
-`TURN_PLANNER_MODEL` to an FCI chat model available to your API key, and adjust
-`MEMORY_EXTRACTION_MIN_CONFIDENCE` to control which extracted items are persisted.
-
-Memory writes have separate ownership boundaries. FCI extraction invokes the internal
-`upsert_user_memory` operation for structured facts and preferences. Current files are
-saved through `save_current_document`, which reads trusted server-side artifact state
-instead of asking the model to reproduce the content. The underlying write operations
-are registered for authentication, authorization, rate limiting, and auditing but are
-never exposed to the chat model. Both paths share the same chunking, embedding, and
-Qdrant persistence implementation.
+The complete set of options and documented defaults is in [`.env.example`](./.env.example).
 
 > [!WARNING]
-> Never commit `.env`, OAuth client secrets, encryption keys, or refresh tokens. The default `.gitignore` excludes local secret files.
+> Never commit `.env`, OAuth secrets, encryption keys, or refresh tokens. Local secret files are excluded by `.gitignore`.
 
-### 4. Start PostgreSQL, Qdrant, and apply migrations
+### 3. Start the data services
 
 ```bash
 docker compose up -d
 alembic upgrade head
 python -m scripts.bootstrap_admin --username admin
+```
+
+The bootstrap command securely prompts for the initial administrator password. PostgreSQL and Qdrant persist their data in named Docker volumes.
+
+The Qdrant dashboard is available at [http://localhost:6333/dashboard](http://localhost:6333/dashboard).
+
+If upgrading a collection created by an older version of this project, migrate it with:
+
+```bash
 python -m scripts.migrate_qdrant_hybrid --dry-run
 python -m scripts.migrate_qdrant_hybrid
 ```
 
-The bootstrap command prompts for a password without echoing it. It activates the
-legacy `user_admin` identity when present so existing conversations and memories keep
-their owner. No default web password is created.
-
-Conversation titles and messages are stored in PostgreSQL. The application does not
-create or alter tables automatically at startup; run Alembic whenever a new migration
-is added. `DATABASE_URL` can point to a managed PostgreSQL instance in deployment.
-PostgreSQL and Qdrant run under the same `agent-tool-runtime` Compose project and
-store data in named Docker volumes.
-
-The Qdrant dashboard will be available at [http://localhost:6333/dashboard](http://localhost:6333/dashboard).
-
-The Qdrant migration is idempotent. It creates the sparse-vector and payload-index
-schema, backfills `active` and BM25 data for existing points, and deactivates legacy
-append-only preferences already superseded by structured preferences. New writes
-store dense and sparse vectors together, so the migration is only required for
-collections created by an older release.
-
-Run the isolated latency benchmark at 1k, 10k, and 100k chunks per user with:
-
-```bash
-python -m scripts.benchmark_vectorstore --sizes 1000,10000,100000 --samples 200
-```
-
-It reports p50/p95/p99 and QPS as JSON lines, uses a uniquely named temporary
-collection, and removes only that collection when finished. Add `--keep` to retain
-the generated collection for inspection.
-
-Useful container commands:
-
-```bash
-docker compose stop
-docker compose start
-docker compose logs qdrant
-```
-
-### 5. Configure Google Drive (optional)
-
-1. Create a project in Google Cloud Console.
-2. Enable the Google Drive API.
-3. Configure the OAuth consent screen.
-4. Create an OAuth client of type **Web application**.
-5. Add `http://localhost:9004/api/auth/google/callback` as an authorized redirect URI.
-6. Set `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, and the exact redirect URI.
-7. Generate an independent Fernet key for `GOOGLE_TOKEN_ENCRYPTION_KEY`:
-
-```bash
-python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-```
-
-The current list/search-all-Drive experience requires the restricted
-`drive.readonly` scope. For a public application, prefer `drive.file` together with
-Google Picker and complete Google's verification requirements before deployment.
-The service-account credential path is no longer used for personal Drive access.
-
 ## Usage
-
-### Command-line interface
-
-Set `CLI_USER_ID` to an existing application user. This value selects the
-tenant and permissions for the local process; it is not an authentication
-credential. Only run the CLI on a trusted machine.
-
-```bash
-python main.py
-```
-
-| Command | Description |
-| --- | --- |
-| `/help` | Show available commands |
-| `/clear` | Clear the current conversation |
-| `/audit` | Display tool-call audit entries with all six registry steps |
-| `/memory` | List stored memories |
-| `/quit` | Exit the application |
 
 ### Web interface
 
@@ -318,101 +162,130 @@ python main.py
 python server.py
 ```
 
-Open [http://localhost:9004](http://localhost:9004). The health endpoint is available at [http://localhost:9004/api/health](http://localhost:9004/api/health).
+Open [http://localhost:9004](http://localhost:9004). API documentation is available at [http://localhost:9004/docs](http://localhost:9004/docs), and the health endpoint is at [http://localhost:9004/api/health](http://localhost:9004/api/health).
+
+### Command-line interface
+
+Set `CLI_USER_ID` to an existing application user, then run:
+
+```bash
+python main.py
+```
+
+`CLI_USER_ID` selects the local process identity and permissions; it is not an authentication credential. Run the CLI only on a trusted machine.
+
+| Command | Description |
+| --- | --- |
+| `/help` | Show available commands |
+| `/clear` | Clear the current conversation |
+| `/audit` | Display tool-call audit entries |
+| `/memory` | List stored memories |
+| `/quit` | Exit the application |
+
+## Google Drive integration
+
+Google integration is optional. To enable it:
+
+1. Enable the Google Drive API in a Google Cloud project.
+2. Configure the OAuth consent screen.
+3. Create an OAuth client of type **Web application**.
+4. Add `http://localhost:9004/api/auth/google/callback` as an authorized redirect URI.
+5. Configure the `GOOGLE_OAUTH_*` variables in `.env`.
+6. Generate `GOOGLE_TOKEN_ENCRYPTION_KEY`:
+
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+The current list/search-all-Drive flow uses the restricted `drive.readonly` scope. A public Google integration should prefer `drive.file` with Google Picker and complete any required Google verification.
 
 ## HTTP API
 
 | Method | Endpoint | Description |
 | --- | --- | --- |
-| `POST` | `/api/auth/login` | Authenticate and receive an access token |
-| `GET` | `/api/auth/google/start` | Start Google OIDC login |
-| `GET` | `/api/auth/google/callback` | Complete a one-time OAuth transaction |
-| `POST` | `/api/auth/refresh` | Rotate the HttpOnly refresh token |
+| `POST` | `/api/auth/login` | Authenticate a local user |
+| `POST` | `/api/auth/complete-password-change` | Complete a required first password change |
+| `POST` | `/api/auth/refresh` | Rotate the refresh token |
 | `POST` | `/api/auth/logout` | Revoke the current refresh session |
-| `GET` | `/api/auth/me` | Read the authenticated user and permissions |
+| `GET` | `/api/auth/me` | Return the authenticated user |
 | `POST` | `/api/auth/change-password` | Change the current user's password |
+| `GET` | `/api/auth/google/start` | Start Google login |
+| `GET` | `/api/auth/google/callback` | Complete Google OAuth |
 | `POST` | `/api/integrations/google-drive/authorize` | Start per-user Drive consent |
-| `GET` | `/api/integrations/google-drive/status` | Read the current user's Drive connection state |
-| `POST` | `/api/integrations/google-drive/disconnect` | Delete and revoke the user's Drive grant |
-| `GET/POST/PATCH` | `/api/admin/users...` | Manage users; requires `users:manage` |
-| `POST` | `/api/chat` | Send a message, creating a conversation when needed |
+| `GET` | `/api/integrations/google-drive/status` | Read Drive connection state |
+| `POST` | `/api/integrations/google-drive/disconnect` | Revoke and delete a Drive grant |
+| `GET`, `POST` | `/api/admin/users` | List or create users |
+| `PATCH` | `/api/admin/users/{user_id}` | Update a user |
+| `POST` | `/api/admin/users/{user_id}/reset-password` | Reset a user's password |
+| `POST` | `/api/chat` | Send a chat message |
 | `GET` | `/api/conversations` | List the current user's conversations |
-| `GET` | `/api/conversations/{id}/messages` | Load a page of stored messages |
-| `GET` | `/api/audit?session_id=...` | Retrieve tool-call audit entries and six-step status trails |
-| `GET` | `/api/memories` | List the user's current facts and preferences |
-| `GET` | `/api/documents` | List saved document sources and chunk counts |
-| `GET` | `/api/health` | Check service availability |
+| `GET` | `/api/conversations/{id}/messages` | Load stored messages |
+| `GET` | `/api/audit` | Retrieve tool-call audit entries |
+| `GET` | `/api/memories` | List current facts and preferences |
+| `GET` | `/api/documents` | List saved document sources |
+| `GET` | `/api/health` | Check service health |
 
-Example request:
+Protected routes use an access token returned by `/api/auth/login`:
 
 ```bash
 curl -X POST http://localhost:9004/api/auth/login \
   -H "Content-Type: application/json" \
   -d '{"username":"admin","password":"your-password"}'
-
-curl -X POST http://localhost:9004/api/chat \
-  -H "Authorization: Bearer <access-token>" \
-  -H "Content-Type: application/json" \
-  -d '{"conversation_id":null,"client_message_id":"b2c28f79-8514-45f1-8aac-1b20beccefda","message":"List my Drive files."}'
 ```
 
-## Development status
+## Project structure
 
-| Component | Status |
-| --- | --- |
-| Provider-independent conversation loop | Available |
-| Anthropic adapter | Available |
-| OpenAI-compatible adapter (OpenAI and FCI) | Available |
-| CLI and FastAPI interfaces | Available |
-| Tool registration | Available |
-| Per-user Google login and encrypted Drive OAuth | Available |
-| Google Drive listing, download, and reading | Available per connected user |
-| Schema validation | Available |
-| PostgreSQL users and JWT authentication | Available |
-| Fixed-role RBAC for HTTP APIs and tools | Available |
-| Sliding-window rate limiter | Available (in-memory) |
-| Tool execution and audit logging | Available (PostgreSQL) |
-| MarkItDown conversion | Available |
-| OpenAI and FCI embeddings | Available |
-| FCI structured fact/preference extraction | Available |
-| Qdrant hybrid memory (vector + BM25) | Available |
-| PostgreSQL conversation history and pagination | Available |
-| Responsive conversation-history sidebar | Available |
-
-Users, role permissions, refresh sessions, security events, tool audit logs, chat
-history, and current artifact state are persisted in PostgreSQL. Login and tool-call
-rate limit buckets remain process-local. Long-term semantic memory is persisted
-separately in Qdrant and partitioned by authenticated user ID.
-
-## Research directions
-
-- Policy-aware and capability-based tool access.
-- Sandboxed execution for untrusted tools.
-- Durable memory with retrieval-quality evaluation.
-- Multi-agent orchestration and delegation.
-- Model fallback, routing, and provider health checks.
-- Tool-selection, latency, reliability, and safety benchmarks.
+```text
+.
+|-- agent.py                 # Conversation, routing, and tool loop
+|-- config.py                # Environment-based configuration
+|-- main.py                  # Interactive CLI
+|-- server.py                # FastAPI service and web UI
+|-- registry/                # Tool metadata and policy pipeline
+|-- services/                # LLM, storage, OAuth, auth, and rendering adapters
+|-- tools/                   # Google Drive and memory tools
+|-- migrations/              # Alembic database migrations
+|-- scripts/                 # Administration, migration, and benchmark utilities
+|-- static/                  # Browser-based chat interface
+|-- tests/                   # Automated tests
+`-- docs/                    # Design and operational documentation
+```
 
 ## Testing
 
-Run the test suite from the project root:
+Run the unit test suite from the project root:
 
 ```bash
 python -m unittest discover -v
 ```
 
-## Security notes
+The optional PostgreSQL integration test requires running PostgreSQL and migrated tables:
 
-- Do not hard-code or commit credentials.
-- Use a unique high-entropy `JWT_SECRET`, enable secure cookies behind HTTPS, and rotate secrets through deployment configuration.
-- `/api/chat` is limited per authenticated user in-process. The daily quota charges estimated input tokens plus `CHAT_TOKEN_BASE_CHARGE` per accepted turn; it is an anti-abuse estimate, not provider billing data. For multiple application workers, replace this in-memory counter with a shared Redis or database-backed limiter.
-- `CHAT_MESSAGE_MAX_CHARS` rejects oversized chat messages and `MAX_REQUEST_BODY_BYTES` provides an application fallback for every HTTP body. Keep the reverse-proxy limit equal to or lower than the application limit.
-- `nginx.conf.example` applies a 64 KiB body limit and an additional per-IP `/api/chat` request limit before traffic reaches FastAPI. Run the example through `nginx -t`, adapt the upstream address, and terminate TLS before production use.
-- The application binds to `127.0.0.1` by default so clients cannot bypass a same-host reverse proxy. Change `SERVER_HOST` only when network policy provides equivalent protection.
-- Only honor forwarded client IP headers from addresses listed in `TRUSTED_PROXY_IPS`. Do not put a public proxy address in this list unless that proxy overwrites `X-Forwarded-For` as shown in the example.
-- Agent sessions use TTL/LRU eviction and conversation-lock entries expire when idle. The defaults are suitable for a single-process assignment deployment and can be tuned through `.env`.
-- Keep `GOOGLE_TOKEN_ENCRYPTION_KEY` separate from `JWT_SECRET`; rotating it requires re-encrypting stored Drive grants.
-- Google OAuth state is one-time, server-side, PKCE-protected, and bound to an HttpOnly callback cookie.
-- Configure an exact `CORS_ORIGINS` allowlist; wildcard origins are not used with credentials.
-- Keep local Qdrant bound to `127.0.0.1`; use authentication and network controls when exposing it remotely.
-- Keep local PostgreSQL bound to `127.0.0.1`; use TLS and managed credentials when deploying it remotely.
+```bash
+RUN_POSTGRES_TESTS=1 python -m unittest tests.test_postgres_integration -v
+```
+
+In Windows PowerShell, set the variable with `$env:RUN_POSTGRES_TESTS = "1"` before running the command.
+
+## Current limitations
+
+- Rate-limit buckets, active agent sessions, and conversation locks are process-local.
+- Tool routing and automatic memory extraction currently depend on the FCI planner.
+- The bundled deployment configuration targets a single trusted application instance.
+- Google Drive list/search uses a restricted OAuth scope that may require verification for public use.
+- Sandboxed execution for untrusted third-party tools is not yet implemented.
+
+## Roadmap
+
+- Shared rate limiting and session coordination for multi-worker deployments.
+- Capability-based access policies and sandboxed tools.
+- Retrieval-quality, tool-selection, latency, and safety evaluations.
+- Provider health checks, routing, and fallback strategies.
+
+## Security
+
+Use high-entropy secrets, HTTPS secure cookies, exact CORS origins, and authenticated private data services in production. See [SECURITY.md](./SECURITY.md) for the reporting process and deployment considerations.
+
+## License
+
+This project is licensed under the [MIT License](./LICENSE).
