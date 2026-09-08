@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
+from dataclasses import dataclass
+import ipaddress
 import threading
+import time
 import traceback
 import uuid
 
@@ -14,10 +18,23 @@ from pydantic import BaseModel, Field
 
 from agent import Agent
 from config import (
+    AGENT_SESSION_CACHE_MAX,
+    AGENT_SESSION_TTL_SECONDS,
     AUTH_COOKIE_SECURE,
+    CHAT_MESSAGE_MAX_CHARS,
+    CHAT_RATE_LIMIT_REQUESTS,
+    CHAT_RATE_LIMIT_WINDOW_SECONDS,
+    CHAT_TOKEN_BASE_CHARGE,
+    CHAT_TOKEN_QUOTA_PER_DAY,
+    CONVERSATION_LOCK_CACHE_MAX,
+    CONVERSATION_LOCK_TTL_SECONDS,
     CORS_ORIGINS,
     GOOGLE_OAUTH_STATE_MINUTES,
     JWT_REFRESH_DAYS,
+    MAX_REQUEST_BODY_BYTES,
+    SERVER_HOST,
+    SERVER_PORT,
+    TRUSTED_PROXY_IPS,
 )
 from services.auth import (
     AuthenticationError,
@@ -39,10 +56,68 @@ from services.google_oauth import (
     GoogleOAuthError,
     google_oauth_service,
 )
+from services.request_limits import ChatLimitExceeded, ChatUsageLimiter
 from services.vectorstore import list_all_memories
 
 
+class RequestBodyLimitMiddleware:
+    """Reject oversized HTTP bodies, including chunked requests."""
+
+    def __init__(self, app, max_body_bytes: int):
+        self.app = app
+        self.max_body_bytes = max(1, max_body_bytes)
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        headers = dict(scope.get("headers") or [])
+        raw_length = headers.get(b"content-length")
+        if raw_length is not None:
+            try:
+                if int(raw_length) > self.max_body_bytes:
+                    await JSONResponse(
+                        status_code=413,
+                        content={"detail": "Request body is too large"},
+                    )(scope, receive, send)
+                    return
+            except ValueError:
+                await JSONResponse(
+                    status_code=400,
+                    content={"detail": "Invalid Content-Length header"},
+                )(scope, receive, send)
+                return
+
+        received = 0
+
+        async def limited_receive():
+            nonlocal received
+            message = await receive()
+            if message.get("type") == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.max_body_bytes:
+                    raise _RequestBodyTooLarge
+            return message
+
+        try:
+            await self.app(scope, limited_receive, send)
+        except _RequestBodyTooLarge:
+            await JSONResponse(
+                status_code=413,
+                content={"detail": "Request body is too large"},
+            )(scope, receive, send)
+
+
+class _RequestBodyTooLarge(Exception):
+    pass
+
+
 app = FastAPI(title="AI Agent - Assignment 1")
+app.add_middleware(
+    RequestBodyLimitMiddleware,
+    max_body_bytes=MAX_REQUEST_BODY_BYTES,
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
@@ -54,12 +129,36 @@ app.add_middleware(
 REFRESH_COOKIE = "agent_refresh"
 GOOGLE_OAUTH_BINDING_COOKIE = "google_oauth_binding"
 sessions: dict[str, Agent] = {}
+session_access: OrderedDict[str, float] = OrderedDict()
+sessions_guard = threading.Lock()
 conversation_locks: dict[str, threading.Lock] = {}
 conversation_locks_guard = threading.Lock()
+chat_usage_limiter = ChatUsageLimiter(
+    max_requests=CHAT_RATE_LIMIT_REQUESTS,
+    window_seconds=CHAT_RATE_LIMIT_WINDOW_SECONDS,
+    daily_token_quota=CHAT_TOKEN_QUOTA_PER_DAY,
+    base_token_charge=CHAT_TOKEN_BASE_CHARGE,
+)
+
+
+@dataclass
+class _ConversationLockState:
+    references: int = 0
+    last_used: float = 0.0
+
+
+conversation_lock_states: dict[str, _ConversationLockState] = {}
 
 
 def _client_ip(request: Request) -> str:
-    return request.client.host if request.client else ""
+    peer = request.client.host if request.client else ""
+    if peer not in TRUSTED_PROXY_IPS:
+        return peer
+    forwarded = request.headers.get("X-Forwarded-For", "").split(",", 1)[0].strip()
+    try:
+        return str(ipaddress.ip_address(forwarded))
+    except ValueError:
+        return peer
 
 
 def _set_refresh_cookie(response: Response, token: str) -> None:
@@ -141,13 +240,96 @@ def _audit_sink(context_id: str):
     return lambda entry: audit_log_repository.append(context_id, entry)
 
 
-def _conversation_lock(key: str) -> threading.Lock:
+def _prune_conversation_locks(now: float) -> None:
+    expired = [
+        key
+        for key, state in conversation_lock_states.items()
+        if state.references == 0
+        and now - state.last_used >= CONVERSATION_LOCK_TTL_SECONDS
+    ]
+    for key in expired:
+        conversation_locks.pop(key, None)
+        conversation_lock_states.pop(key, None)
+
+    overflow = len(conversation_locks) - max(1, CONVERSATION_LOCK_CACHE_MAX)
+    if overflow <= 0:
+        return
+    inactive = sorted(
+        (
+            (state.last_used, key)
+            for key, state in conversation_lock_states.items()
+            if state.references == 0
+        )
+    )
+    for _, key in inactive[:overflow]:
+        conversation_locks.pop(key, None)
+        conversation_lock_states.pop(key, None)
+
+
+def _try_acquire_conversation_lock(key: str) -> threading.Lock | None:
+    now = time.monotonic()
     with conversation_locks_guard:
-        return conversation_locks.setdefault(key, threading.Lock())
+        _prune_conversation_locks(now)
+        lock = conversation_locks.setdefault(key, threading.Lock())
+        state = conversation_lock_states.setdefault(
+            key, _ConversationLockState(last_used=now)
+        )
+        state.references += 1
+        state.last_used = now
+        if lock.acquire(blocking=False):
+            return lock
+        state.references -= 1
+        return None
+
+
+def _release_conversation_lock(key: str, lock: threading.Lock) -> None:
+    lock.release()
+    now = time.monotonic()
+    with conversation_locks_guard:
+        state = conversation_lock_states.get(key)
+        if state is not None:
+            state.references = max(0, state.references - 1)
+            state.last_used = now
+        _prune_conversation_locks(now)
 
 
 def _agent_key(user_id: str, conversation_id: str) -> str:
     return f"{user_id}:conversation:{conversation_id}"
+
+
+def _prune_sessions(now: float, protected_key: str | None = None) -> None:
+    for key in list(session_access):
+        if key not in sessions:
+            session_access.pop(key, None)
+    for key in sessions:
+        session_access.setdefault(key, now)
+
+    for key, accessed_at in list(session_access.items()):
+        if key != protected_key and now - accessed_at >= AGENT_SESSION_TTL_SECONDS:
+            session_access.pop(key, None)
+            sessions.pop(key, None)
+
+    max_entries = max(1, AGENT_SESSION_CACHE_MAX)
+    while len(sessions) > max_entries:
+        oldest_key, accessed_at = session_access.popitem(last=False)
+        if oldest_key == protected_key:
+            session_access[oldest_key] = accessed_at
+            continue
+        sessions.pop(oldest_key, None)
+
+
+def _drop_session(key: str) -> None:
+    with sessions_guard:
+        sessions.pop(key, None)
+        session_access.pop(key, None)
+
+
+def _drop_user_sessions(user_id: str) -> None:
+    prefix = f"{user_id}:"
+    with sessions_guard:
+        for key in [key for key in sessions if key.startswith(prefix)]:
+            sessions.pop(key, None)
+            session_access.pop(key, None)
 
 
 def _get_conversation_agent(
@@ -158,29 +340,42 @@ def _get_conversation_agent(
     force_reload: bool = False,
 ) -> Agent:
     key = _agent_key(user["user_id"], conversation_id)
-    if force_reload:
-        sessions.pop(key, None)
-    if key not in sessions:
-        stored = conversation_repository.list_context_messages(
-            conversation_id, user["user_id"], before_ordinal=before_ordinal
-        )
-        history = [
-            {"role": item["role"], "content": item["content"]}
-            for item in stored if item["role"] in {"user", "assistant"}
-        ]
-        artifact = conversation_repository.get_last_artifact(
-            conversation_id, user["user_id"]
-        )
-        sessions[key] = Agent(
-            principal=user,
-            conversation_history=history,
-            last_artifact=artifact,
-            audit_sink=_audit_sink(f"conversation:{conversation_id}"),
-        )
-    else:
-        # Cached agents must never retain permissions from an older role/token.
-        sessions[key].principal = dict(user)
-    return sessions[key]
+    now = time.monotonic()
+    with sessions_guard:
+        _prune_sessions(now, protected_key=key)
+        if force_reload:
+            sessions.pop(key, None)
+            session_access.pop(key, None)
+        cached = sessions.get(key)
+        if cached is not None:
+            # Cached agents must never retain permissions from an older role/token.
+            cached.principal = dict(user)
+            session_access[key] = now
+            session_access.move_to_end(key)
+            return cached
+
+    stored = conversation_repository.list_context_messages(
+        conversation_id, user["user_id"], before_ordinal=before_ordinal
+    )
+    history = [
+        {"role": item["role"], "content": item["content"]}
+        for item in stored if item["role"] in {"user", "assistant"}
+    ]
+    artifact = conversation_repository.get_last_artifact(
+        conversation_id, user["user_id"]
+    )
+    agent = Agent(
+        principal=user,
+        conversation_history=history,
+        last_artifact=artifact,
+        audit_sink=_audit_sink(f"conversation:{conversation_id}"),
+    )
+    with sessions_guard:
+        sessions[key] = agent
+        session_access[key] = time.monotonic()
+        session_access.move_to_end(key)
+        _prune_sessions(time.monotonic(), protected_key=key)
+    return agent
 
 
 class LoginRequest(BaseModel):
@@ -210,7 +405,7 @@ class AdminUpdateUserRequest(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    message: str = Field(min_length=1, max_length=100_000)
+    message: str = Field(min_length=1, max_length=CHAT_MESSAGE_MAX_CHARS)
     conversation_id: str | None = None
     client_message_id: str | None = None
 
@@ -574,9 +769,7 @@ def update_user(
             detail=f"role={body.role};is_active={body.is_active}",
             ip_address=_client_ip(request),
         )
-        sessions_to_remove = [key for key in sessions if key.startswith(f"{user_id}:")]
-        for key in sessions_to_remove:
-            sessions.pop(key, None)
+        _drop_user_sessions(user_id)
         return {"user": _public_user(updated)}
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -608,12 +801,28 @@ def reset_password(
 @app.post("/api/chat", response_model=ChatResponse)
 def chat(
     req: ChatRequest,
+    response: Response,
     user: dict = Depends(require_permissions("chat:use", "conversation:write")),
 ):
+    try:
+        allowance = chat_usage_limiter.check(user["user_id"], req.message)
+    except ChatLimitExceeded as exc:
+        raise HTTPException(
+            status_code=429,
+            detail=str(exc),
+            headers={"Retry-After": str(exc.retry_after)},
+        ) from exc
+    response.headers["X-RateLimit-Remaining"] = str(
+        allowance["remaining_requests"]
+    )
+    response.headers["X-TokenQuota-Remaining"] = str(
+        allowance["remaining_tokens"]
+    )
+
     client_message_id = req.client_message_id or str(uuid.uuid4())
     lock_key = f"{user['user_id']}:{req.conversation_id or client_message_id}"
-    lock = _conversation_lock(lock_key)
-    if not lock.acquire(blocking=False):
+    lock = _try_acquire_conversation_lock(lock_key)
+    if lock is None:
         raise HTTPException(status_code=409, detail="Another message is already running for this conversation")
     try:
         conversation = None
@@ -674,11 +883,11 @@ def chat(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
         if "conversation_id" in locals():
-            sessions.pop(_agent_key(user["user_id"], conversation_id), None)
+            _drop_session(_agent_key(user["user_id"], conversation_id))
         traceback.print_exc()
         return JSONResponse(status_code=500, content={"response": "Internal server error", "response_html": "", "tools_used": []})
     finally:
-        lock.release()
+        _release_conversation_lock(lock_key, lock)
 
 
 @app.get("/api/conversations", response_model=ConversationListResponse)
@@ -805,7 +1014,7 @@ def health():
     database_ok = conversation_repository.healthcheck()
     return JSONResponse(
         status_code=200 if database_ok else 503,
-        content={"status": "ok" if database_ok else "degraded", "database": "ok" if database_ok else "unavailable", "port": 9004},
+        content={"status": "ok" if database_ok else "degraded", "database": "ok" if database_ok else "unavailable", "port": SERVER_PORT},
     )
 
 
@@ -816,4 +1025,4 @@ def serve_ui():
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=9004)
+    uvicorn.run(app, host=SERVER_HOST, port=SERVER_PORT)

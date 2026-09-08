@@ -145,12 +145,25 @@ MEMORY_BM25_AVG_LEN=256
 
 DATABASE_URL=postgresql+psycopg://agent:agent@localhost:5432/agent_db
 CHAT_CONTEXT_MAX_TOKENS=12000
+CHAT_MESSAGE_MAX_CHARS=12000
+MAX_REQUEST_BODY_BYTES=65536
+CHAT_RATE_LIMIT_REQUESTS=10
+CHAT_RATE_LIMIT_WINDOW_SECONDS=60
+CHAT_TOKEN_QUOTA_PER_DAY=250000
+CHAT_TOKEN_BASE_CHARGE=1024
+AGENT_SESSION_TTL_SECONDS=1800
+AGENT_SESSION_CACHE_MAX=500
+CONVERSATION_LOCK_TTL_SECONDS=300
+CONVERSATION_LOCK_CACHE_MAX=2000
 JWT_SECRET=replace_with_at_least_32_random_characters
 JWT_ACCESS_MINUTES=15
 JWT_REFRESH_DAYS=7
 JWT_PASSWORD_CHANGE_MINUTES=10
 AUTH_COOKIE_SECURE=false
 CORS_ORIGINS=http://localhost:9004
+TRUSTED_PROXY_IPS=127.0.0.1,::1
+SERVER_HOST=127.0.0.1
+SERVER_PORT=9004
 
 # Existing application user whose tenant and permissions the local CLI uses.
 CLI_USER_ID=user_admin
@@ -392,6 +405,12 @@ python -m unittest discover -v
 
 - Do not hard-code or commit credentials.
 - Use a unique high-entropy `JWT_SECRET`, enable secure cookies behind HTTPS, and rotate secrets through deployment configuration.
+- `/api/chat` is limited per authenticated user in-process. The daily quota charges estimated input tokens plus `CHAT_TOKEN_BASE_CHARGE` per accepted turn; it is an anti-abuse estimate, not provider billing data. For multiple application workers, replace this in-memory counter with a shared Redis or database-backed limiter.
+- `CHAT_MESSAGE_MAX_CHARS` rejects oversized chat messages and `MAX_REQUEST_BODY_BYTES` provides an application fallback for every HTTP body. Keep the reverse-proxy limit equal to or lower than the application limit.
+- `nginx.conf.example` applies a 64 KiB body limit and an additional per-IP `/api/chat` request limit before traffic reaches FastAPI. Run the example through `nginx -t`, adapt the upstream address, and terminate TLS before production use.
+- The application binds to `127.0.0.1` by default so clients cannot bypass a same-host reverse proxy. Change `SERVER_HOST` only when network policy provides equivalent protection.
+- Only honor forwarded client IP headers from addresses listed in `TRUSTED_PROXY_IPS`. Do not put a public proxy address in this list unless that proxy overwrites `X-Forwarded-For` as shown in the example.
+- Agent sessions use TTL/LRU eviction and conversation-lock entries expire when idle. The defaults are suitable for a single-process assignment deployment and can be tuned through `.env`.
 - Keep `GOOGLE_TOKEN_ENCRYPTION_KEY` separate from `JWT_SECRET`; rotating it requires re-encrypting stored Drive grants.
 - Google OAuth state is one-time, server-side, PKCE-protected, and bound to an HttpOnly callback cookie.
 - Configure an exact `CORS_ORIGINS` allowlist; wildcard origins are not used with credentials.

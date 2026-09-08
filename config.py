@@ -56,6 +56,28 @@ DATABASE_URL = os.getenv(
     "postgresql+psycopg://agent:agent@localhost:5432/agent_db",
 ).strip()
 CHAT_CONTEXT_MAX_TOKENS = int(os.getenv("CHAT_CONTEXT_MAX_TOKENS", "12000"))
+CHAT_MESSAGE_MAX_CHARS = int(os.getenv("CHAT_MESSAGE_MAX_CHARS", "12000"))
+MAX_REQUEST_BODY_BYTES = int(os.getenv("MAX_REQUEST_BODY_BYTES", "65536"))
+CHAT_RATE_LIMIT_REQUESTS = int(os.getenv("CHAT_RATE_LIMIT_REQUESTS", "10"))
+CHAT_RATE_LIMIT_WINDOW_SECONDS = int(
+    os.getenv("CHAT_RATE_LIMIT_WINDOW_SECONDS", "60")
+)
+CHAT_TOKEN_QUOTA_PER_DAY = int(
+    os.getenv("CHAT_TOKEN_QUOTA_PER_DAY", "250000")
+)
+# Charge a small fixed amount in addition to input tokens so repeated tiny
+# prompts cannot bypass the daily anti-abuse quota.
+CHAT_TOKEN_BASE_CHARGE = int(os.getenv("CHAT_TOKEN_BASE_CHARGE", "1024"))
+AGENT_SESSION_TTL_SECONDS = int(
+    os.getenv("AGENT_SESSION_TTL_SECONDS", "1800")
+)
+AGENT_SESSION_CACHE_MAX = int(os.getenv("AGENT_SESSION_CACHE_MAX", "500"))
+CONVERSATION_LOCK_TTL_SECONDS = int(
+    os.getenv("CONVERSATION_LOCK_TTL_SECONDS", "300")
+)
+CONVERSATION_LOCK_CACHE_MAX = int(
+    os.getenv("CONVERSATION_LOCK_CACHE_MAX", "2000")
+)
 JWT_SECRET = os.getenv("JWT_SECRET", "").strip()
 JWT_ACCESS_MINUTES = int(os.getenv("JWT_ACCESS_MINUTES", "15"))
 JWT_REFRESH_DAYS = int(os.getenv("JWT_REFRESH_DAYS", "7"))
@@ -70,6 +92,13 @@ CORS_ORIGINS = [
     for value in os.getenv("CORS_ORIGINS", "http://localhost:9004").split(",")
     if value.strip()
 ]
+TRUSTED_PROXY_IPS = {
+    value.strip()
+    for value in os.getenv("TRUSTED_PROXY_IPS", "").split(",")
+    if value.strip()
+}
+SERVER_HOST = os.getenv("SERVER_HOST", "127.0.0.1").strip()
+SERVER_PORT = int(os.getenv("SERVER_PORT", "9004"))
 CLI_USER_ID = os.getenv("CLI_USER_ID", "user_admin").strip()
 
 # Per-user Google OAuth. Authentication and Drive consent are intentionally

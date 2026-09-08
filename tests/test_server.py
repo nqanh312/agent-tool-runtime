@@ -36,10 +36,15 @@ class ServerRenderingTests(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(server.app)
         server.app.dependency_overrides[server.current_principal] = lambda: TEST_USER
+        server.chat_usage_limiter.clear()
 
     def tearDown(self):
         server.app.dependency_overrides.clear()
         server.sessions.clear()
+        server.session_access.clear()
+        server.conversation_locks.clear()
+        server.conversation_lock_states.clear()
+        server.chat_usage_limiter.clear()
 
     def test_protected_endpoint_requires_bearer_without_override(self):
         server.app.dependency_overrides.clear()
@@ -121,6 +126,51 @@ class ServerRenderingTests(unittest.TestCase):
         body = response.json()
         self.assertEqual(body["response"], "### Result\n\nRead $\\rightarrow$ display")
         self.assertIn("<h3>Result</h3>", body["response_html"])
+        self.assertIn("x-ratelimit-remaining", response.headers)
+        self.assertIn("x-tokenquota-remaining", response.headers)
+
+    def test_rejects_oversized_request_body_before_json_parsing(self):
+        response = self.client.post(
+            "/api/chat",
+            content=b"x" * (server.MAX_REQUEST_BODY_BYTES + 1),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(response.status_code, 413)
+
+    def test_rejects_chat_message_above_configured_character_limit(self):
+        response = self.client.post(
+            "/api/chat",
+            json={"message": "x" * (server.CHAT_MESSAGE_MAX_CHARS + 1)},
+        )
+        self.assertEqual(response.status_code, 422)
+
+    def test_chat_rate_limit_returns_429_and_retry_after(self):
+        conversation_id = str(uuid.uuid4())
+        repository = MagicMock()
+        repository.find_user_message.return_value = None
+        repository.create_conversation_with_message.return_value = (
+            {"id": conversation_id, "title": "Hello"},
+            {"id": str(uuid.uuid4()), "ordinal": 1},
+        )
+        repository.append_assistant_message.return_value = {
+            "id": str(uuid.uuid4()), "created_at": "2026-09-05T12:00:00+00:00",
+        }
+        limiter = server.ChatUsageLimiter(
+            max_requests=1,
+            window_seconds=60,
+            daily_token_quota=100_000,
+            base_token_charge=1,
+        )
+        with (
+            patch.object(server, "chat_usage_limiter", limiter),
+            patch.object(server, "conversation_repository", repository),
+            patch.object(server, "_get_conversation_agent", return_value=_FakeAgent()),
+        ):
+            first = self.client.post("/api/chat", json={"message": "Hello"})
+            second = self.client.post("/api/chat", json={"message": "Again"})
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 429)
+        self.assertIn("Retry-After", second.headers)
 
     def test_memory_api_uses_authenticated_user(self):
         memories = [
